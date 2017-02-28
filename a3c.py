@@ -10,6 +10,14 @@ import gym
 from datetime import datetime
 import time
 
+
+
+T = 0
+TMAX = 8000000
+t_max = 32
+
+
+
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true', help='run testing', default=False)
 parser.add_argument('--log-file', type=str, help='the name of log file')
@@ -23,7 +31,7 @@ parser.add_argument('--gpus', type=str, help='the gpus will be used, e.g "0,1,2,
 
 parser.add_argument('--num-epochs', type=int, default=120, help='the number of training epochs')
 parser.add_argument('--num-examples', type=int, default=1000000, help='the number of training examples')
-parser.add_argument('--batch-size', type=int, default=32)
+parser.add_argument('--batch-size', type=int, default=1)
 parser.add_argument('--input-length', type=int, default=4)
 
 parser.add_argument('--lr', type=float, default=0.0001)
@@ -45,6 +53,7 @@ def sample_policy_action(num_actions, probs):
     """
     # Subtract a tiny value from probabilities in order to avoid
     # "ValueError: sum(pvals[:-1]) > 1.0" in numpy.multinomial
+    probs = probs.asnumpy()
     probs = probs - np.finfo(np.float32).epsneg
 
     histogram = np.random.multinomial(1, probs)
@@ -68,8 +77,10 @@ def actor_learner_thread(num, module, dataiter):
 
     probs_summary_t = 0
 
-    s_t = env.get_initial_state()
+    #s_t = env.get_initial_state()
+    dataiter.reset()
     terminal = False
+    s_t = dataiter.data()
 
     while T < TMAX:
         s_batch = []
@@ -86,7 +97,10 @@ def actor_learner_thread(num, module, dataiter):
             module.forward(mx.io.DataBatch(data=data, label=None), is_train=False)
             probs, _, val = module.get_outputs()
             V.append(val.asnumpy())
-            action_index = sample_policy_action(act_dim, probs)
+            #action_index = sample_policy_action(act_dim, probs)
+            probs = probs.asnumpy()[0]
+            print probs
+            action_index = np.random.choice(act_dim, p=probs)
             a_t = np.zeros([act_dim])
             a_t[action_index] = 1
 
@@ -146,9 +160,15 @@ def setup():
     dataiters = [rl_data.GymDataIter(args.game, args.input_length, web_viz=False) for _ in range(args.num_threads)]
     act_dim = dataiters[0].act_dim
     net = sym.get_symbol_atari(act_dim)
-    module = mx.mod.Module(net, data_names=dataiters[0].provide_data, label_names=('policy_label', 'value_label'), context=devs)
+    module = mx.mod.Module(net, data_names=[d[0] for d in
+        dataiters[0].provide_data],
+            label_names=(['policy_label', 'value_label']), context=devs)
+    #module.bind(data_shapes=dataiters[0].provide_data,
+    #            label_shapes=[('policy_label', (1, )), ('value_label', (1, ))],
+    #            grad_req='add')
     module.bind(data_shapes=dataiters[0].provide_data,
-                label_shapes=[('policy_label', (1, act_dim)), ('value_label', (1,1))],
+                label_shapes=[('policy_label', (args.batch_size, )),
+                    ('value_label', (args.batch_size, 1))],
                 grad_req='add')
 
     return module, dataiters
@@ -192,11 +212,13 @@ def train(module, dataiters):
     else:
         arg_params = aux_params = None
 
-    init = mx.init.Mixed(['fc_value_weight|fc_policy_weight', '.*'],
-                         [mx.init.Uniform(0.001), mx.init.Xavier(rnd_type='gaussian', factor_type="in", magnitude=2)])
-    module.init_params(initializer=init,
-                       arg_params=arg_params, aux_params=aux_params)
+    #init = mx.init.Mixed(['fc_value_weight|fc_policy_weight', '.*'],
+    #                     [mx.init.Uniform(0.001), mx.init.Xavier(rnd_type='gaussian', factor_type="in", magnitude=2)])
+    #init = mx.sym.Variable(init=mx.init.*)
+    #module.init_params(initializer=init,
+    #                   arg_params=arg_params, aux_params=aux_params)
 
+    module.init_params()
     # optimizer
     module.init_optimizer(kvstore=kv, optimizer='adam',
                           optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})

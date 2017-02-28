@@ -62,7 +62,8 @@ class RLDataIter(object):
 
         self.reset()
 
-        self.provide_data = [mx.io.DataDesc('data', self.state_.shape, np.uint8)]
+        self.provide_data = [mx.io.DataDesc('data', self.state_.shape,
+            np.uint8)]
 
         self.web_viz = web_viz
 
@@ -77,7 +78,7 @@ class RLDataIter(object):
 
     def reset(self):
         self.state_ = np.tile(
-            np.asarray([env.reset() for env in self.env], dtype=np.uint8).transpose((0, 3, 1, 2)),
+            np.asarray(self.env.reset(), dtype=np.uint8).transpose((2, 0, 1)),
             (1, self.input_length, 1, 1))
 
     def visual(self):
