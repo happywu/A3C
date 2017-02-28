@@ -1,1 +1,3 @@
-# A3C
+## A3C
+
+This is a MXNET implementation of A3C as described in ["Asynchronous Methods for Deep Reinforcement Learning"](http://arxiv.org/pdf/1602.01783v1.pdf).
