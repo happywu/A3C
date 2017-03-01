@@ -71,6 +71,7 @@ def actor_learner_thread(num, module, dataiter):
     action_index = np.random.choice(act_dim)
     r_t, terminal = dataiter.act([action_index])
 
+
     print r_t, terminal
 
 def setup():
