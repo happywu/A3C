@@ -67,8 +67,6 @@ def actor_learner_thread(num, module, dataiter):
     env = dataiter.env
     act_dim = dataiter.act_dim
 
-    time.sleep(5*num)
-
     # Set up per-episode counters
     ep_reward = 0
     ep_avg_v = 0
@@ -148,11 +146,15 @@ def actor_learner_thread(num, module, dataiter):
             #print mx.nd.array(R_t)
             batch = mx.io.DataBatch(data=s_batch[i], label=[mx.nd.array(a_batch[i]), mx.nd.array(R_t)])
 
+            print 'forward: ' 
+
             module.forward(batch, is_train=True)
 
             pi = module.get_outputs()[1]
 
             h = args.beta * (mx.nd.log(pi+1e-6)+1)
+            
+            print 'back: ' 
 
             module.backward([mx.nd.array(adv), h])
 
@@ -165,6 +167,8 @@ def actor_learner_thread(num, module, dataiter):
                 print 'T ', T
                 print 'err ', err
 
+    module.update()
+    print score.squeeze()
 def setup():
 
     devs = mx.cpu() if args.gpus is None else [
