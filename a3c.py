@@ -117,7 +117,7 @@ def actor_learner_thread(num, module, dataiter):
             ep_reward += r_t
 
             r_t = np.clip(r_t, -1, 1)
-            past_rewards.append(r_t)
+            past_rewards.append(r_t.reshape((-1, 1)))
 
             t += 1
             T += 1
@@ -127,7 +127,7 @@ def actor_learner_thread(num, module, dataiter):
             s_t = s_t1
 
         if terminal:
-            R_t = 0
+            R_t = np.zeros((1,1))
         else:
             _, _, val = module.get_outputs()
             R_t = val.asnumpy()
@@ -139,10 +139,13 @@ def actor_learner_thread(num, module, dataiter):
             #print 'past_rewards ', past_rewards[i]
             R_t = past_rewards[i] + args.gamma * R_t
             #print 'R_t ', R_t
-            R_batch[i] = R_t
+            #R_batch[i] = R_t
             adv =  np.tile(R_t - V[i], (1, act_dim))
 
             #batch = mx.io.DataBatch(data=[mx.nd.array(s_batch[i], np.uint8)], label=[mx.nd.array(a_batch[i]), mx.nd.array(R_t)])
+            #print s_batch[i]
+            #print 'R_t ', R_t
+            #print mx.nd.array(R_t)
             batch = mx.io.DataBatch(data=s_batch[i], label=[mx.nd.array(a_batch[i]), mx.nd.array(R_t)])
 
             module.forward(batch, is_train=True)
@@ -154,6 +157,8 @@ def actor_learner_thread(num, module, dataiter):
             module.backward([mx.nd.array(adv), h])
 
             err += (adv**2).mean()
+            score += past_rewards[i]
+            print 'score', score
             if T % 100 == 0 : 
                 print 'pi ', pi.asnumpy()
                 print 'h ', h.asnumpy()
