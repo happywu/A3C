@@ -57,7 +57,7 @@ class RLDataIter(object):
         self.env = self.make_env()
         self.state_ = None
         self.input_length = input_length
-        self.act_dim = self.env.action_space.n
+        self.act_dim = self.env[0].action_space.n
 
 
         self.reset()
@@ -77,18 +77,24 @@ class RLDataIter(object):
         raise NotImplementedError()
 
     def reset(self):
+        #self.state_ = np.tile(
+        #    np.asarray(self.env.reset(), dtype=np.uint8).transpose((2, 0, 1)),
+        #    (1, self.input_length, 1, 1))
         self.state_ = np.tile(
-            np.asarray(self.env.reset(), dtype=np.uint8).transpose((2, 0, 1)),
-            (1, self.input_length, 1, 1))
+                np.asarray([env.reset() for env in self.env],
+                    dtype=np.uint8).transpose((0, 3, 1, 2)), 
+                (1, self.input_length, 1, 1))
 
     def visual(self):
         raise NotImplementedError()
 
     def act(self, action):
         new = [env.step(act) for env, act in zip(self.env, action)]
+        #new = [self.env.step(action)]
 
         reward = np.asarray([i[1] for i in new], dtype=np.float32)
         done = np.asarray([i[2] for i in new], dtype=np.float32)
+
 
         channels = self.state_.shape[1]/self.input_length
         state = np.zeros_like(self.state_)
@@ -121,7 +127,7 @@ class GymDataIter(RLDataIter):
         super(GymDataIter, self).__init__(input_length, web_viz=web_viz)
 
     def make_env(self):
-        return gym.make(self.game)
+        return [gym.make(self.game)]
 
     def visual(self):
         data = self.state_[:4, -self.state_.shape[1]/self.input_length:, :, :]
