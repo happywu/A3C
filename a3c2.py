@@ -109,21 +109,19 @@ def actor_learner_thread(num):
             probs, _, val = module.get_outputs()
             V.append(val.asnumpy())
             probs = probs.asnumpy()[0]
-            action_index = np.random.choice(act_dim, p=probs)
-            a_t = np.zeros([act_dim])
-            a_t[action_index] = 1
+            action_index = [np.random.choice(act_dim, p=probs)]
 
             if probs_summary_t % 1000 == 0:
                 print "Prob, Val", np.max(probs), "V ", val.asnumpy()
 
             s_batch.append(s_t)
-            a_batch.append(a_t)
+            a_batch.append(action_index)
 
             s_t1 = data
-            r_t, terminal = dataiter.act([action_index])
+            r_t, terminal = dataiter.act(action_index)
             ep_reward += r_t
 
-            r_t = np.clip(r_t, -1, 1)
+            #r_t = np.clip(r_t, -1, 1)
             past_rewards.append(r_t.reshape((-1, 1)))
 
             t += 1
@@ -141,14 +139,13 @@ def actor_learner_thread(num):
 
         R_batch = np.zeros(t)
         err = 0
-        score = 0
+        score = np.zeros((args.batch_size, 1))
         for i in reversed(range(t_start, t)):
             R_t = past_rewards[i] + args.gamma * R_t
             adv =  np.tile(R_t - V[i], (1, act_dim))
+            #print 'adv', adv
 
             batch = mx.io.DataBatch(data=s_batch[i], label=[mx.nd.array(a_batch[i]), mx.nd.array(R_t)])
-
-            print 'forward: ' 
 
             module.forward(batch, is_train=True)
 
@@ -156,13 +153,11 @@ def actor_learner_thread(num):
 
             h = args.beta * (mx.nd.log(pi+1e-6)+1)
             
-            print 'back: ' 
-
+            #print 'gradient: ',adv, h.asnumpy()
             module.backward([mx.nd.array(adv), h])
 
             err += (adv**2).mean()
             score += past_rewards[i]
-            print 'score', score
             if T % 100 == 0 : 
                 print 'pi ', pi.asnumpy()
                 print 'h ', h.asnumpy()
@@ -170,7 +165,7 @@ def actor_learner_thread(num):
                 print 'err ', err
         module.update()
         copyTargetQNetwork(module, Qnet)
-        print score.squeeze()
+        print err/args.t_max, score.mean(), T
 
 
 def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
