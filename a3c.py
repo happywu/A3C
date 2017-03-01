@@ -16,8 +16,6 @@ T = 0
 TMAX = 8000000
 t_max = 32
 
-
-
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true', help='run testing', default=False)
 parser.add_argument('--log-file', type=str, help='the name of log file')
@@ -40,9 +38,8 @@ parser.add_argument('--t-max', type=int, default=4)
 parser.add_argument('--gamma', type=float, default=0.99)
 parser.add_argument('--beta', type=float, default=0.08)
 
-
 parser.add_argument('--game', type=str, default='Breakout-v0')
-parser.add_argument('--num-threads', type=int, default=16)
+parser.add_argument('--num-threads', type=int, default=3)
 
 args = parser.parse_args()
 
@@ -64,13 +61,10 @@ def actor_learner_thread(num, module, dataiter):
     global TMAX, T
 
     # Wrap env with AtariEnvironment helper class
-    env = dataiter.env
     act_dim = dataiter.act_dim
 
     # Set up per-episode counters
     ep_reward = 0
-    ep_avg_v = 0
-    v_steps = 0
     ep_t = 0
 
     probs_summary_t = 0

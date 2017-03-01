@@ -61,18 +61,16 @@ def sample_policy_action(num_actions, probs):
     return action_index
 
 def actor_learner_thread(num, module, dataiter):
-
     act_dim = dataiter.act_dim
-
     time.sleep(5*num)
-
     dataiter.reset()
 
-    action_index = np.random.choice(act_dim)
-    r_t, terminal = dataiter.act([action_index])
+    for _ in range(100):
+        data = dataiter.data()
 
-
-    print r_t, terminal
+        module.forward(mx.io.DataBatch(data=data, label=None), is_train=False)
+        action_index = np.random.choice(act_dim)
+        dataiter.act([action_index])
 
 def setup():
 
@@ -85,9 +83,7 @@ def setup():
     module = mx.mod.Module(net, data_names=[d[0] for d in
                                             dataiters[0].provide_data],
                            label_names=(['policy_label', 'value_label']), context=devs)
-    #module.bind(data_shapes=dataiters[0].provide_data,
-    #            label_shapes=[('policy_label', (1, )), ('value_label', (1, ))],
-    #            grad_req='add')
+
     module.bind(data_shapes=dataiters[0].provide_data,
                 label_shapes=[('policy_label', (args.batch_size, )),
                               ('value_label', (args.batch_size, 1))],
@@ -134,17 +130,9 @@ def train(module, dataiters):
     else:
         arg_params = aux_params = None
 
-    #init = mx.init.Mixed(['fc_value_weight|fc_policy_weight', '.*'],
-    #                     [mx.init.Uniform(0.001), mx.init.Xavier(rnd_type='gaussian', factor_type="in", magnitude=2)])
-    #init = mx.sym.Variable(init=mx.init.*)
-    #module.init_params(initializer=init,
-    #                   arg_params=arg_params, aux_params=aux_params)
-
     module.init_params()
-    # optimizer
     module.init_optimizer(kvstore=kv, optimizer='adam',
                           optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
-
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
