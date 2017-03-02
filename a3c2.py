@@ -123,6 +123,7 @@ def actor_learner_thread(num):
             data = dataiter.data()
 
             #print 'forward1 ', data,  '\n'
+            #assert data.shape == (1,)
             module.forward(mx.io.DataBatch(data=data, label=None), is_train=False)
             probs, _, val = module.get_outputs()
             V.append(val.asnumpy())
@@ -159,10 +160,12 @@ def actor_learner_thread(num):
             #print 'adv', adv
 
             #print mx.nd.array(a_batch[i])
+            #print mx.nd.array(a_batch[i]).shape
+            assert mx.nd.array(a_batch[i]).shape == (1,)
             batch = mx.io.DataBatch(data=s_batch[i],
                     label=[mx.nd.array(a_batch[i]), mx.nd.array(R_t)])
 
-            print 'forward2 ', s_batch[i], mx.nd.array(a_batch[i]), mx.nd.array(R_t)
+            #print 'forward2 ', s_batch[i], mx.nd.array(a_batch[i]), mx.nd.array(R_t)
             module.forward(batch, is_train=True)
 
             pi = module.get_outputs()[1]
