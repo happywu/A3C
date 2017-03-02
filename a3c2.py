@@ -45,9 +45,12 @@ def copyTargetQNetwork(fromNetwork, toNetwork):
     time_now = time.time()
     arg_params, aux_params = fromNetwork.get_params()
 
-    toNetwork.init_params(initializer=None, arg_params=arg_params,
-            aux_params=aux_params, force_init=True)
-    #print 'copy!!!' , time.time() - time_now
+    try: 
+        toNetwork.init_params(initializer=None, arg_params=arg_params,
+                aux_params=aux_params, force_init=True)
+    except:
+        print 'from ', fromNetwork.get_params()
+        print 'to ', toNetwork.get_params()
 
 def setup():
 
@@ -58,12 +61,25 @@ def setup():
     act_dim = dataiter.act_dim
     net = sym.get_symbol_atari(act_dim)
     module = mx.mod.Module(net, data_names=[d[0] for d in
-        dataiter.provide_data],
+            dataiter.provide_data],
             label_names=(['policy_label', 'value_label']), context=devs)
+
+    '''
+    module = mx.mod.Module(net, data_names=('data'),
+            label_names=(['policy_label', 'value_label']), context=devs)
+    '''
+    '''
+    print dataiter.provide_data
+    module.bind(data_shapes=[('data',(args.batch_size,12, 210, 160))], label_shapes=[('policy_label',
+        (args.batch_size,)), ('value_label', (args.batch_size, 1))],
+        grad_req='add')
+    '''
+
     module.bind(data_shapes=dataiter.provide_data,
                 label_shapes=[('policy_label', (args.batch_size, )),
                     ('value_label', (args.batch_size, 1))],
                 grad_req='add')
+    
 
     return module, dataiter
 
@@ -93,6 +109,7 @@ def actor_learner_thread(num):
     terminal = False
     s_t = dataiter.data()
 
+    score = np.zeros((args.batch_size, 1))
     while T < TMAX:
         s_batch = []
         past_rewards = []
@@ -105,31 +122,28 @@ def actor_learner_thread(num):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = dataiter.data()
 
+            #print 'forward1 ', data,  '\n'
             module.forward(mx.io.DataBatch(data=data, label=None), is_train=False)
             probs, _, val = module.get_outputs()
             V.append(val.asnumpy())
             probs = probs.asnumpy()[0]
             action_index = [np.random.choice(act_dim, p=probs)]
 
-            if probs_summary_t % 1000 == 0:
-                print "Prob, Val", np.max(probs), "V ", val.asnumpy()
+            #if probs_summary_t % 1000 == 0:
+            #    print "Prob, Val", np.max(probs), "V ", val.asnumpy()
 
-            s_batch.append(s_t)
+            s_batch.append(data)
             a_batch.append(action_index)
 
-            s_t1 = data
             r_t, terminal = dataiter.act(action_index)
             ep_reward += r_t
 
-            #r_t = np.clip(r_t, -1, 1)
             past_rewards.append(r_t.reshape((-1, 1)))
 
             t += 1
             T += 1
             ep_t += 1
             probs_summary_t += 1
-
-            s_t = s_t1
 
         if terminal:
             R_t = np.zeros((1,1))
@@ -139,14 +153,16 @@ def actor_learner_thread(num):
 
         R_batch = np.zeros(t)
         err = 0
-        score = np.zeros((args.batch_size, 1))
         for i in reversed(range(t_start, t)):
             R_t = past_rewards[i] + args.gamma * R_t
             adv =  np.tile(R_t - V[i], (1, act_dim))
             #print 'adv', adv
 
-            batch = mx.io.DataBatch(data=s_batch[i], label=[mx.nd.array(a_batch[i]), mx.nd.array(R_t)])
+            #print mx.nd.array(a_batch[i])
+            batch = mx.io.DataBatch(data=s_batch[i],
+                    label=[mx.nd.array(a_batch[i]), mx.nd.array(R_t)])
 
+            print 'forward2 ', s_batch[i], mx.nd.array(a_batch[i]), mx.nd.array(R_t)
             module.forward(batch, is_train=True)
 
             pi = module.get_outputs()[1]
@@ -158,14 +174,21 @@ def actor_learner_thread(num):
 
             err += (adv**2).mean()
             score += past_rewards[i]
-            if T % 100 == 0 : 
-                print 'pi ', pi.asnumpy()
-                print 'h ', h.asnumpy()
-                print 'T ', T
-                print 'err ', err
+            #if T % 100 == 0 : 
+                #print 'pi ', pi.asnumpy()
+                #print 'h ', h.asnumpy()
+                #print 'T ', T
+                #print 'err ', err
         module.update()
         copyTargetQNetwork(module, Qnet)
-        print err/args.t_max, score.mean(), T
+        #if T % 1000 == 0 :
+        #    print err/args.t_max, score.mean(), T
+
+        if terminal:
+            print 'Thread, ', num, 'Eposide end! reward ', ep_reward, T
+            ep_reward = 0
+            terminal = False
+            dataiter.reset()
 
 
 def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
@@ -177,6 +200,8 @@ def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
             os.makedirs(log_dir)
         if not log_file:
             log_file = (prefix if prefix else '') + datetime.now().strftime('_%Y_%m_%d-%H_%M.log')
+            #r_t = np.clip(r_t, -1, 1)
+            #r_t = np.clip(r_t, -1, 1)
             log_file = log_file.replace('/', '-')
         else:
             log_file = log_file
