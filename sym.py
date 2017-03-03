@@ -10,9 +10,14 @@ def get_symbol_atari(act_dim):
     net = mx.symbol.Flatten(data=net)
     net = mx.symbol.FullyConnected(data=net, name='fc4', num_hidden=256)
     net = mx.symbol.Activation(data=net, name='relu4', act_type="relu")
+
+    ## policy network
     fc_policy = mx.symbol.FullyConnected(data=net, name='fc_policy', num_hidden=act_dim)
-    policy = mx.symbol.SoftmaxOutput(data=fc_policy, name='policy', out_grad=True)
-    entropy = mx.symbol.SoftmaxActivation(data=fc_policy, name='entropy')
-    value = mx.symbol.FullyConnected(data=net, name='fc_value', num_hidden=1)
-    value = mx.symbol.LinearRegressionOutput(data=value, name='value')
-    return mx.symbol.Group([policy, entropy, value])
+    policy_network = mx.symbol.SoftmaxOutput(data=fc_policy, name='policy')
+
+    ## value network
+    fc_value = mx.symbol.FullyConnected(data=net, name='fc_value', num_hidden=1)
+    value_network = mx.symbol.LinearRegressionOutput(data=fc_value, name='value')
+
+    return mx.symbol.Group([policy_network, value_network])
+
