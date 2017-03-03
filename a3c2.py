@@ -60,41 +60,37 @@ def setup():
     dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
     act_dim = dataiter.act_dim
     net = sym.get_symbol_atari(act_dim)
+    #Pnet = sym.get_symbol_atari(act_dim, isQnet=False)
+    '''
     module = mx.mod.Module(net, data_names=[d[0] for d in
             dataiter.provide_data],
             label_names=(['policy_label', 'value_label']), context=devs)
-
-    '''
-    module = mx.mod.Module(net, data_names=('data'),
-            label_names=(['policy_label', 'value_label']), context=devs)
-    '''
-    '''
-    print dataiter.provide_data
-    module.bind(data_shapes=[('data',(args.batch_size,12, 210, 160))], label_shapes=[('policy_label',
-        (args.batch_size,)), ('value_label', (args.batch_size, 1))],
-        grad_req='add')
-    '''
 
     module.bind(data_shapes=dataiter.provide_data,
                 label_shapes=[('policy_label', (args.batch_size, )),
                     ('value_label', (args.batch_size, 1))],
                 grad_req='add')
-    
+    '''
+    mod = mx.mod.Module(symbol=net, data_names=('data',), label_names=('actionInput', 'rewardInput'), context=devs)
+    mod.bind(data_shapes=dataiter.provide_data, label_shapes=[('actionInput', (args.batch_size, act_dim)),('rewardInput', (args.batch_size, ))],
+              for_training=True)
 
-    return module, dataiter
+    kv = mx.kvstore.create(args.kv_store)
+    mod.init_params()
+    # optimizer
+    mod.init_optimizer(kvstore=kv, optimizer='adam',
+                          optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
+
+    return mod, dataiter
 
 def actor_learner_thread(num):
     global TMAX, T
-    kv = mx.kvstore.create(args.kv_store)
+    #kv = mx.kvstore.create(args.kv_store)
 
     module, dataiter = setup()
 
-    module.init_params()
-    # optimizer
-    module.init_optimizer(kvstore=kv, optimizer='adam',
-                          optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
-
     copyTargetQNetwork(Qnet, module)
+
     act_dim = dataiter.act_dim
 
     # Set up per-episode counters
@@ -120,17 +116,13 @@ def actor_learner_thread(num):
         while not (terminal or ((t - t_start)  == args.t_max)):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = dataiter.data()
-
             #print 'forward1 ', data,  '\n'
             #assert data.shape == (1,)
             module.forward(mx.io.DataBatch(data=data, label=None), is_train=False)
-            probs, _, val = module.get_outputs()
+            val, probs, _, _ = module.get_outputs()
             V.append(val.asnumpy())
             probs = probs.asnumpy()[0]
             action_index = [np.random.choice(act_dim, p=probs)]
-
-            #if probs_summary_t % 1000 == 0:
-            #    print "Prob, Val", np.max(probs), "V ", val.asnumpy()
 
             s_batch.append(data)
             a_batch.append(action_index)
@@ -151,40 +143,28 @@ def actor_learner_thread(num):
             _, _, val = module.get_outputs()
             R_t = val.asnumpy()
 
-        R_batch = np.zeros(t)
         err = 0
         for i in reversed(range(t_start, t)):
             R_t = past_rewards[i] + args.gamma * R_t
             adv =  np.tile(R_t - V[i], (1, act_dim))
-            #print 'adv', adv
-
-            #print mx.nd.array(a_batch[i])
-            #print mx.nd.array(a_batch[i]).shape
-            assert mx.nd.array(a_batch[i]).shape == (1,)
+            action_t = np.zeros([act_dim])
+            action_t[a_batch[i]] = 1
             batch = mx.io.DataBatch(data=s_batch[i],
-                    label=[mx.nd.array(a_batch[i]), mx.nd.array(R_t)])
+                    label=[mx.nd.array(action_t), mx.nd.array(R_t)])
 
-            #print 'forward2 ', s_batch[i], mx.nd.array(a_batch[i]), mx.nd.array(R_t)
             module.forward(batch, is_train=True)
 
             pi = module.get_outputs()[1]
 
             h = args.beta * (mx.nd.log(pi+1e-6)+1)
             
-            #print 'gradient: ',adv, h.asnumpy()
-            module.backward([mx.nd.array(adv), h])
+            #module.backward([mx.nd.array(adv), h])
 
             err += (adv**2).mean()
             score += past_rewards[i]
-            #if T % 100 == 0 : 
-                #print 'pi ', pi.asnumpy()
-                #print 'h ', h.asnumpy()
-                #print 'T ', T
-                #print 'err ', err
-        module.update()
+
+        #module.update()
         copyTargetQNetwork(module, Qnet)
-        #if T % 1000 == 0 :
-        #    print err/args.t_max, score.mean(), T
 
         if terminal:
             print 'Thread, ', num, 'Eposide end! reward ', ep_reward, T
@@ -237,12 +217,8 @@ def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
-    global Qnet
+    global Qnet, Pnet
     Qnet, _ = setup()
-    Qnet.init_params()
-    # optimizer
-    Qnet.init_optimizer(kvstore=kv, optimizer='adam',
-                          optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
 
