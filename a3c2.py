@@ -54,8 +54,11 @@ def copyTargetQNetwork(fromNetwork, toNetwork):
 
 def setup():
 
+    '''
     devs = mx.cpu() if args.gpus is None else [
         mx.gpu(int(i)) for i in args.gpus.split(',')]
+    '''
+    devs = mx.gpu(0)
 
     dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
     act_dim = dataiter.act_dim
@@ -71,14 +74,20 @@ def setup():
                     ('value_label', (args.batch_size, 1))],
                 grad_req='add')
     '''
-    mod = mx.mod.Module(symbol=net, data_names=('data',), label_names=('actionInput', 'rewardInput'), context=devs)
-    mod.bind(data_shapes=dataiter.provide_data, label_shapes=[('actionInput', (args.batch_size, act_dim)),('rewardInput', (args.batch_size, ))],
-              for_training=True)
+    mod = mx.mod.Module(symbol=net, 
+            #data_names=('data',), 
+            data_names = [d[0] for d in dataiter.provide_data],
+            label_names=(['actionInput', 'rewardInput']), context=devs)
 
-    kv = mx.kvstore.create(args.kv_store)
+    mod.bind(data_shapes=dataiter.provide_data, 
+            label_shapes=[('actionInput',(args.batch_size, act_dim)),
+                ('rewardInput', (args.batch_size, 1))], 
+            grad_req='add')
+
+    #kv = mx.kvstore.create(args.kv_store)
     mod.init_params()
     # optimizer
-    mod.init_optimizer(kvstore=kv, optimizer='adam',
+    mod.init_optimizer(optimizer='adam',
                           optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
 
     return mod, dataiter
@@ -98,7 +107,7 @@ def actor_learner_thread(num):
     ep_t = 0
 
     probs_summary_t = 0
-
+    print 'ffffffffffffff\n'
     #s_t = env.get_initial_state()
     dataiter.reset()
     terminal = False
@@ -149,6 +158,7 @@ def actor_learner_thread(num):
             adv =  np.tile(R_t - V[i], (1, act_dim))
             action_t = np.zeros([act_dim])
             action_t[a_batch[i]] = 1
+            print mx.nd.arary(action_t), mx.nd.array(R_t)
             batch = mx.io.DataBatch(data=s_batch[i],
                     label=[mx.nd.array(action_t), mx.nd.array(R_t)])
 
