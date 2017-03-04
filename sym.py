@@ -19,7 +19,7 @@ def get_symbol_atari(act_dim, isQnet=False):
 
     ## value network
     value = mx.symbol.FullyConnected(data=net, name='fc_value', num_hidden=1)
-    value_loss = mx.symbol.MakeLoss((rewardInput - value_network) ** 2)
+    value_loss = mx.symbol.MakeLoss((rewardInput - value) ** 2)
     value_out = mx.symbol.BlockGrad(data=value, name='value_out')
 
     # policy_log needs out_grad when backward

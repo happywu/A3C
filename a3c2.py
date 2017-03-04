@@ -42,7 +42,6 @@ parser.add_argument('--num-threads', type=int, default=3)
 args = parser.parse_args()
 
 def copyTargetQNetwork(fromNetwork, toNetwork):
-    time_now = time.time()
     arg_params, aux_params = fromNetwork.get_params()
 
     try: 
@@ -57,31 +56,31 @@ def setup():
     '''
     devs = mx.cpu() if args.gpus is None else [
         mx.gpu(int(i)) for i in args.gpus.split(',')]
-    '''
+        '''
     devs = mx.gpu(0)
+
 
     dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
     act_dim = dataiter.act_dim
     net = sym.get_symbol_atari(act_dim)
-    #Pnet = sym.get_symbol_atari(act_dim, isQnet=False)
+
     '''
     module = mx.mod.Module(net, data_names=[d[0] for d in
             dataiter.provide_data],
             label_names=(['policy_label', 'value_label']), context=devs)
+    '''
 
+    '''
     module.bind(data_shapes=dataiter.provide_data,
                 label_shapes=[('policy_label', (args.batch_size, )),
                     ('value_label', (args.batch_size, 1))],
                 grad_req='add')
     '''
-    mod = mx.mod.Module(symbol=net, 
-            #data_names=('data',), 
-            data_names = [d[0] for d in dataiter.provide_data],
-            label_names=(['actionInput', 'rewardInput']), context=devs)
+    mod = mx.mod.Module(net, data_names=('data', 'rewardInput'),
+                        label_names=None,context=devs)
 
-    mod.bind(data_shapes=dataiter.provide_data, 
-            label_shapes=[('actionInput',(args.batch_size, act_dim)),
-                ('rewardInput', (args.batch_size, 1))], 
+    mod.bind(data_shapes=[(dataiter.provide_data), ('rewardInput', (args.batch_size, 1))],
+            label_shapes=None,
             grad_req='add')
 
     #kv = mx.kvstore.create(args.kv_store)
@@ -107,7 +106,7 @@ def actor_learner_thread(num):
     ep_t = 0
 
     probs_summary_t = 0
-    print 'ffffffffffffff\n'
+
     #s_t = env.get_initial_state()
     dataiter.reset()
     terminal = False
@@ -125,15 +124,18 @@ def actor_learner_thread(num):
         while not (terminal or ((t - t_start)  == args.t_max)):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = dataiter.data()
-            #print 'forward1 ', data,  '\n'
-            #assert data.shape == (1,)
+
+            rewardInput = mx.nd.array([0])
+            s_batch.append(data)
+
+            data = [data, rewardInput]
+
             module.forward(mx.io.DataBatch(data=data, label=None), is_train=False)
-            val, probs, _, _ = module.get_outputs()
-            V.append(val.asnumpy())
-            probs = probs.asnumpy()[0]
+            policy_log, value_loss, policy_out, value_out= module.get_outputs()
+            V.append(value_out.asnumpy())
+            probs = policy_out.asnumpy()[0]
             action_index = [np.random.choice(act_dim, p=probs)]
 
-            s_batch.append(data)
             a_batch.append(action_index)
 
             r_t, terminal = dataiter.act(action_index)
@@ -149,28 +151,31 @@ def actor_learner_thread(num):
         if terminal:
             R_t = np.zeros((1,1))
         else:
-            _, _, val = module.get_outputs()
-            R_t = val.asnumpy()
+            value_out = module.get_outputs()[3]
+            R_t = value_out.asnumpy()
 
         err = 0
         for i in reversed(range(t_start, t)):
             R_t = past_rewards[i] + args.gamma * R_t
-            adv =  np.tile(R_t - V[i], (1, act_dim))
             action_t = np.zeros([act_dim])
             action_t[a_batch[i]] = 1
             print mx.nd.arary(action_t), mx.nd.array(R_t)
-            batch = mx.io.DataBatch(data=s_batch[i],
-                    label=[mx.nd.array(action_t), mx.nd.array(R_t)])
+
+            batch = mx.io.DataBatch(data=[s_batch[i], past_rewards[i]],
+                    label=None)
 
             module.forward(batch, is_train=True)
 
-            pi = module.get_outputs()[1]
-
+            '''
+            pi = module.get_outputs()[0]
             h = args.beta * (mx.nd.log(pi+1e-6)+1)
-            
-            #module.backward([mx.nd.array(adv), h])
+            '''
 
-            err += (adv**2).mean()
+            advs = np.zeros((1, act_dim))
+            advs[a_batch[i]] = R_t - V[i]
+
+            module.backward(out_grads=advs)
+
             score += past_rewards[i]
 
         #module.update()
