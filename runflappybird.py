@@ -157,8 +157,6 @@ def actor_learner_thread(num):
             terminal = False
 
 def train():
-    kv = mx.kvstore.create(args.kv_store)
-
     global Qnet, lock
     Qnet, _ = setup()
     lock = threading.Lock()
