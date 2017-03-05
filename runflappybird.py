@@ -41,41 +41,41 @@ parser.add_argument('--num-threads', type=int, default=3)
 args = parser.parse_args()
 
 def copyTargetQNetwork(fromNetwork, toNetwork):
-    time_now = time.time()
-    arg_params, aux_params = fromNetwork.get_params()
 
+    lock.acquire()
+    arg_params, aux_params = fromNetwork.get_params()
     try:
         toNetwork.init_params(initializer=None, arg_params=arg_params,
                               aux_params=aux_params, force_init=True)
     except:
         print 'from ', fromNetwork.get_params()
         print 'to ', toNetwork.get_params()
+    lock.release()
 
 def setup():
 
     devs = mx.gpu(0)
 
     net = sym.get_symbol_atari(2)
-    module = mx.mod.Module(net, data_names=['data'],
-                           label_names=(['policy_label', 'value_label']), context=devs)
+    module = mx.mod.Module(net, data_names=('data','rewardInput'),
+                           label_names=None, context=devs)
 
-    module.bind(data_shapes=[('data',(1,1,80,80))],
-                label_shapes=[('policy_label', (1, )),
-                              ('value_label', (1, 1))],
-                grad_req='add')
+    module.bind(data_shapes=[('data',(1,1,80,80)),
+                             ('rewardInput',(args.batch_size, 1))],
+                label_shapes=None,
+                grad_req='write')
 
+    module.init_params()
+    # optimizer
+    module.init_optimizer(kvstore=kv, optimizer='adam',
+                        optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
     return module
 
 def actor_learner_thread(num):
     global TMAX, T
     kv = mx.kvstore.create(args.kv_store)
 
-    module = setup()
-
-    module.init_params()
-    # optimizer
-    module.init_optimizer(kvstore=kv, optimizer='adam',
-                          optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
+    module  = setup()
 
     copyTargetQNetwork(Qnet, module)
 
@@ -101,15 +101,18 @@ def actor_learner_thread(num):
         while not (terminal or ((t - t_start)  == args.t_max)):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = gamedata.data()
-
+            s_batch.append(data)
             print data
-            module.forward(mx.io.DataBatch(data=data, label=None), is_train=False)
-            probs, _, val = module.get_outputs()
-            V.append(val.asnumpy())
-            probs = probs.asnumpy()[0]
+            rewardInput = [[0]]
+            batch = mx.io.DataBatch(dataa=[data, mx.nd.array(rewardInput)],
+                                    label=None)
+            module.forward(mx.io.DataBatch(data=batch, label=None), is_train=False)
+
+            policy_log, value_loss, policy_out,value_out = module.get_outputs()
+            V.append(value_out.asnumpy())
+            probs = policy_out.asnumpy()[0]
             action_index = [np.random.choice(act_dim, p=probs)]
 
-            s_batch.append(data)
             a_batch.append(action_index)
 
             _, r_t, terminal = gamedata.act(action_index)
@@ -124,27 +127,27 @@ def actor_learner_thread(num):
         if terminal:
             R_t = np.zeros((1,1))
         else:
-            _, _, val = module.get_outputs()
-            R_t = val.asnumpy()
+            value_out = module.get_outputs()[3]
+            R_t = value_out.asnumpy()
 
         err = 0
         for i in reversed(range(t_start, t)):
             R_t = past_rewards[i] + args.gamma * R_t
-            adv =  np.tile(R_t - V[i], (1, act_dim))
-
-            batch = mx.io.DataBatch(data=s_batch[i],
-                                    label=[mx.nd.array(a_batch[i]), mx.nd.array(R_t)])
+            batch = mx.io.DataBatch(data=[s_batch[i],
+                                          mx.nd.array(past_rewards[i])],
+                                    label=None)
 
             module.forward(batch, is_train=True)
 
-            pi = module.get_outputs()[1]
+            advs = np.zeros((1, act_dim))
+            advs[:,a_batch[i]] = R_t - V[i]
+            advs = mx.nd.array(advs)
 
-            h = args.beta * (mx.nd.log(pi+1e-6)+1)
-
-            module.backward([mx.nd.array(adv), h])
+            module.backward(out_grads=[advs])
 
             err += (adv**2).mean()
             score += past_rewards[i]
+
         module.update()
         copyTargetQNetwork(module, Qnet)
 
@@ -156,12 +159,9 @@ def actor_learner_thread(num):
 def train():
     kv = mx.kvstore.create(args.kv_store)
 
-    global Qnet
+    global Qnet, lock
     Qnet, _ = setup()
-    Qnet.init_params()
-    # optimizer
-    Qnet.init_optimizer(kvstore=kv, optimizer='adam',
-                        optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
+    lock = threading.Lock()
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
 
