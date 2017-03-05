@@ -42,14 +42,15 @@ parser.add_argument('--num-threads', type=int, default=3)
 args = parser.parse_args()
 
 def copyTargetQNetwork(fromNetwork, toNetwork):
+    '''
     arg_params, aux_params = fromNetwork.get_params()
-
     try: 
         toNetwork.init_params(initializer=None, arg_params=arg_params,
                 aux_params=aux_params, force_init=True)
     except:
         print 'from ', fromNetwork.get_params()
         print 'to ', toNetwork.get_params()
+    '''
 
 def setup():
 
@@ -64,25 +65,20 @@ def setup():
     act_dim = dataiter.act_dim
     net = sym.get_symbol_atari(act_dim)
 
-    '''
-    module = mx.mod.Module(net, data_names=[d[0] for d in
-            dataiter.provide_data],
-            label_names=(['policy_label', 'value_label']), context=devs)
-    '''
-
-    '''
-    module.bind(data_shapes=dataiter.provide_data,
-                label_shapes=[('policy_label', (args.batch_size, )),
-                    ('value_label', (args.batch_size, 1))],
-                grad_req='add')
-    '''
     mod = mx.mod.Module(net, data_names=('data', 'rewardInput'),
                         label_names=None,context=devs)
 
-    mod.bind(data_shapes=[(dataiter.provide_data), ('rewardInput', (args.batch_size, 1))],
+    '''
+    mod.bind(data_shapes=[('data', (args.batch_size, 12, 210, 160)),
+        ('rewardInput', (args.batch_size, 1))],
             label_shapes=None,
-            grad_req='add')
+            grad_req='write')
+            '''
 
+    mod.bind(data_shapes=[dataiter.provide_data[0],
+        ('rewardInput', (args.batch_size, 1))],
+            label_shapes=None,
+            grad_req='write')
     #kv = mx.kvstore.create(args.kv_store)
     mod.init_params()
     # optimizer
@@ -124,13 +120,13 @@ def actor_learner_thread(num):
         while not (terminal or ((t - t_start)  == args.t_max)):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = dataiter.data()
-
-            rewardInput = mx.nd.array([0])
             s_batch.append(data)
 
-            data = [data, rewardInput]
+            rewardInput = [[0]]
+            tempdata = mx.nd.ones((1,12,210,160))
+            batch = mx.io.DataBatch(data=[data[0], mx.nd.array(rewardInput)], label=None)
+            module.forward(batch, is_train=False)
 
-            module.forward(mx.io.DataBatch(data=data, label=None), is_train=False)
             policy_log, value_loss, policy_out, value_out= module.get_outputs()
             V.append(value_out.asnumpy())
             probs = policy_out.asnumpy()[0]
@@ -159,22 +155,23 @@ def actor_learner_thread(num):
             R_t = past_rewards[i] + args.gamma * R_t
             action_t = np.zeros([act_dim])
             action_t[a_batch[i]] = 1
-            print mx.nd.arary(action_t), mx.nd.array(R_t)
+            # print mx.nd.arary(action_t), mx.nd.array(R_t)
 
-            batch = mx.io.DataBatch(data=[s_batch[i], past_rewards[i]],
-                    label=None)
+            #print 'past_reward', mx.nd.array(past_rewards[i])
 
+            batch = mx.io.DataBatch(data=[s_batch[i][0],
+                mx.nd.array(past_rewards[i])], label=None)
+
+            #print batch
             module.forward(batch, is_train=True)
 
-            '''
-            pi = module.get_outputs()[0]
-            h = args.beta * (mx.nd.log(pi+1e-6)+1)
-            '''
-
             advs = np.zeros((1, act_dim))
-            advs[a_batch[i]] = R_t - V[i]
+            #print a_batch[i]
+            advs[:,a_batch[i]] = R_t - V[i]
 
-            module.backward(out_grads=advs)
+            advs = mx.nd.array(advs)
+            #print 'Back', module.get_outputs()[0], advs
+            module.backward(out_grads=[advs])
 
             score += past_rewards[i]
 
@@ -186,6 +183,7 @@ def actor_learner_thread(num):
             ep_reward = 0
             terminal = False
             dataiter.reset()
+            
 
 
 def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
@@ -242,6 +240,8 @@ def train():
 
     for t in actor_learner_threads:
         t.join()
+
+    #actor_learner_thread(0)
 
 if __name__ == '__main__':
     train()
