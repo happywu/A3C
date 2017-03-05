@@ -42,7 +42,7 @@ parser.add_argument('--num-threads', type=int, default=3)
 args = parser.parse_args()
 
 def copyTargetQNetwork(fromNetwork, toNetwork):
-    '''
+    lock.acquire()
     arg_params, aux_params = fromNetwork.get_params()
     try: 
         toNetwork.init_params(initializer=None, arg_params=arg_params,
@@ -50,7 +50,7 @@ def copyTargetQNetwork(fromNetwork, toNetwork):
     except:
         print 'from ', fromNetwork.get_params()
         print 'to ', toNetwork.get_params()
-    '''
+    lock.release()
 
 def setup():
 
@@ -175,7 +175,7 @@ def actor_learner_thread(num):
 
             score += past_rewards[i]
 
-        #module.update()
+        module.update()
         copyTargetQNetwork(module, Qnet)
 
         if terminal:
@@ -230,13 +230,15 @@ def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
-    global Qnet, Pnet
+    global Qnet, Pnet, lock
     Qnet, _ = setup()
+    lock = threading.Lock()
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
 
     for t in actor_learner_threads:
         t.start()
+
 
     for t in actor_learner_threads:
         t.join()
