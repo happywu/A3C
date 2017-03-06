@@ -37,7 +37,9 @@ class GameDataIter():
     def act(self, action):
         action0 = np.array([0,0])
         action0[action] = 1
-        return self.game.frame_step(action0)
+        imagedata, reward, terminal = self.game.frame_step(action0)
+        self.state_ = dataPrep(preprocess(imagedata))
+        return [imagedata, reward, terminal]
     def state(self):
         return self.state_
 
