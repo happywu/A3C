@@ -110,6 +110,7 @@ def actor_learner_thread(num):
 
     score = np.zeros((args.batch_size, 1))
     while T < TMAX:
+        tic = time.time()
         s_batch = []
         past_rewards = []
         a_batch = []
@@ -121,9 +122,7 @@ def actor_learner_thread(num):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = dataiter.data()
             s_batch.append(data)
-
             rewardInput = [[0]]
-            tempdata = mx.nd.ones((1,12,210,160))
             batch = mx.io.DataBatch(data=[data[0], mx.nd.array(rewardInput)], label=None)
             module.forward(batch, is_train=False)
 
@@ -169,6 +168,7 @@ def actor_learner_thread(num):
             #print a_batch[i]
             advs[:,a_batch[i]] = R_t - V[i]
 
+            err  += (advs ** 2).mean()
             advs = mx.nd.array(advs)
             #print 'Back', module.get_outputs()[0], advs
             module.backward(out_grads=[advs])
@@ -176,6 +176,7 @@ def actor_learner_thread(num):
             score += past_rewards[i]
 
         module.update()
+        logging.info('fps: %f err: %f score: %f T: %f'%(args.batch_size/(time.time()-tic), err/args.t_max, score.mean(), T))
         copyTargetQNetwork(module, Qnet)
 
         if terminal:
