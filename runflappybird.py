@@ -53,7 +53,7 @@ def copyTargetQNetwork(fromNetwork, toNetwork):
     lock.release()
 
 def setup():
-
+    kv = mx.kvstore.create(args.kv_store)
     devs = mx.gpu(0)
 
     net = sym.get_symbol_atari(2)
@@ -73,7 +73,6 @@ def setup():
 
 def actor_learner_thread(num):
     global TMAX, T
-    kv = mx.kvstore.create(args.kv_store)
 
     module  = setup()
 
@@ -102,11 +101,10 @@ def actor_learner_thread(num):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = gamedata.data()
             s_batch.append(data)
-            print data
             rewardInput = [[0]]
-            batch = mx.io.DataBatch(dataa=[data, mx.nd.array(rewardInput)],
+            batch = mx.io.DataBatch(data=[mx.nd.array(data), mx.nd.array(rewardInput)],
                                     label=None)
-            module.forward(mx.io.DataBatch(data=batch, label=None), is_train=False)
+            module.forward(batch, is_train=False)
 
             policy_log, value_loss, policy_out,value_out = module.get_outputs()
             V.append(value_out.asnumpy())
@@ -116,6 +114,7 @@ def actor_learner_thread(num):
             a_batch.append(action_index)
 
             _, r_t, terminal = gamedata.act(action_index)
+            r_t = np.array([r_t])
             ep_reward += r_t
 
             past_rewards.append(r_t.reshape((-1, 1)))
@@ -133,7 +132,7 @@ def actor_learner_thread(num):
         err = 0
         for i in reversed(range(t_start, t)):
             R_t = past_rewards[i] + args.gamma * R_t
-            batch = mx.io.DataBatch(data=[s_batch[i],
+            batch = mx.io.DataBatch(data=[mx.nd.array(s_batch[i]),
                                           mx.nd.array(past_rewards[i])],
                                     label=None)
 
@@ -145,7 +144,7 @@ def actor_learner_thread(num):
 
             module.backward(out_grads=[advs])
 
-            err += (adv**2).mean()
+            #err += (adv**2).mean()
             score += past_rewards[i]
 
         module.update()
@@ -158,7 +157,7 @@ def actor_learner_thread(num):
 
 def train():
     global Qnet, lock
-    Qnet, _ = setup()
+    Qnet = setup()
     lock = threading.Lock()
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
