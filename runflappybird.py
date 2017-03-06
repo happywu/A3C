@@ -31,12 +31,14 @@ parser.add_argument('--input-length', type=int, default=4)
 
 parser.add_argument('--lr', type=float, default=0.0001)
 parser.add_argument('--wd', type=float, default=0)
-parser.add_argument('--t-max', type=int, default=4)
+parser.add_argument('--t-max', type=int, default=32)
 parser.add_argument('--gamma', type=float, default=0.99)
 parser.add_argument('--beta', type=float, default=0.08)
 
 parser.add_argument('--game', type=str, default='Breakout-v0')
 parser.add_argument('--num-threads', type=int, default=3)
+parser.add_argument('--eta', type=float, default=0.1)
+
 
 args = parser.parse_args()
 
@@ -54,7 +56,8 @@ def copyTargetQNetwork(fromNetwork, toNetwork):
 
 def setup():
     kv = mx.kvstore.create(args.kv_store)
-    devs = mx.gpu(0)
+    #devs = mx.gpu(0)
+    devs = mx.cpu()
 
     net = sym.get_symbol_atari(2)
     module = mx.mod.Module(net, data_names=('data','rewardInput'),
@@ -63,13 +66,18 @@ def setup():
     module.bind(data_shapes=[('data',(1,1,80,80)),
                              ('rewardInput',(args.batch_size, 1))],
                 label_shapes=None,
-                grad_req='write')
+                grad_req='add')
 
     module.init_params()
     # optimizer
     module.init_optimizer(kvstore=kv, optimizer='adam',
                         optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
     return module
+def action_select(act_dim, probs, eta):
+    if(np.random.rand()<eta):
+        return [np.random.choice(act_dim)]
+    else:
+        return [np.argmax(probs)]
 
 def actor_learner_thread(num):
     global TMAX, T
@@ -97,9 +105,10 @@ def actor_learner_thread(num):
         t_start = t
 
         V = []
+        Done = []
         while not (terminal or ((t - t_start)  == args.t_max)):
             # Perform action a_t according to policy pi(a_t | s_t)
-            data = gamedata.data()
+            data = gamedata.state()
             s_batch.append(data)
             rewardInput = [[0]]
             batch = mx.io.DataBatch(data=[mx.nd.array(data), mx.nd.array(rewardInput)],
@@ -107,15 +116,22 @@ def actor_learner_thread(num):
             module.forward(batch, is_train=False)
 
             policy_log, value_loss, policy_out,value_out = module.get_outputs()
+
+            #print policy_log.asnumpy(), value_loss.asnumpy(), policy_out.asnumpy(), value_out.asnumpy()
             V.append(value_out.asnumpy())
             probs = policy_out.asnumpy()[0]
-            action_index = [np.random.choice(act_dim, p=probs)]
+            #action_index = [np.random.choice(act_dim, p=probs)]
+            action_index = action_select(act_dim, probs, args.eta)
+            print 'prob', probs
+            #action_index = np.argmax(probs)
+            #print action_index
 
             a_batch.append(action_index)
 
             _, r_t, terminal = gamedata.act(action_index)
             r_t = np.array([r_t])
             ep_reward += r_t
+            Done.append(terminal)
 
             past_rewards.append(r_t.reshape((-1, 1)))
 
@@ -130,18 +146,22 @@ def actor_learner_thread(num):
             R_t = value_out.asnumpy()
 
         err = 0
-        for i in reversed(range(t_start, t)):
+        print R_t
+        for i in reversed(range(t_start, t-1)):
             R_t = past_rewards[i] + args.gamma * R_t
             batch = mx.io.DataBatch(data=[mx.nd.array(s_batch[i]),
-                                          mx.nd.array(past_rewards[i])],
+                                          mx.nd.array(R_t)],
                                     label=None)
 
+
             module.forward(batch, is_train=True)
-
+            #print past_rewards[i], module.get_outputs()[3].asnumpy(), 'value_loss', module.get_outputs()[1].asnumpy(), 'log_policy', module.get_outputs()[0].asnumpy(), 'policy_out', module.get_outputs()[2].asnumpy()
+            print 'value_loss', module.get_outputs()[1].asnumpy(), 'value_out', module.get_outputs()[3].asnumpy(), R_t, past_rewards[i], 'policy_out', module.get_outputs()[2].asnumpy()
             advs = np.zeros((1, act_dim))
-            advs[:,a_batch[i]] = R_t - V[i]
+            advs[:,a_batch[i]] = (R_t - V[i])
             advs = mx.nd.array(advs)
-
+            #print 'advs ', R_t, V[i], advs.asnumpy()
+            print 'adv', advs.asnumpy()
             module.backward(out_grads=[advs])
 
             #err += (adv**2).mean()
@@ -162,11 +182,15 @@ def train():
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
 
+    '''
     for t in actor_learner_threads:
         t.start()
 
     for t in actor_learner_threads:
         t.join()
+    '''
+
+    actor_learner_thread(0)
 
 if __name__ == '__main__':
     train()
