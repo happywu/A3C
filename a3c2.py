@@ -38,19 +38,19 @@ parser.add_argument('--beta', type=float, default=0.08)
 
 parser.add_argument('--game', type=str, default='Breakout-v0')
 parser.add_argument('--num-threads', type=int, default=3)
-parser.add_argument('--eta', type=int, default=0.1)
+parser.add_argument('--eta', type=int, default=0.9)
 
 args = parser.parse_args()
 
 def copyTargetQNetwork(fromNetwork, toNetwork):
     lock.acquire()
-    arg_params, aux_params = fromNetwork.get_params()
-    try: 
-        toNetwork.init_params(initializer=None, arg_params=arg_params,
-                aux_params=aux_params, force_init=True)
-    except:
-        print 'from ', fromNetwork.get_params()
-        print 'to ', toNetwork.get_params()
+    gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
+            fromNetwork._exec_group.grad_arrays]
+    for gradsto, gradsfrom in zip(toNetwork._exec_group.grad_arrays,
+            gradfrom):
+        for gradto, gradfrom in zip(gradsto, gradsfrom):
+            gradto += gradfrom
+    toNetwork.update()
     lock.release()
 
 def setup():
@@ -58,7 +58,7 @@ def setup():
     '''
     devs = mx.cpu() if args.gpus is None else [
         mx.gpu(int(i)) for i in args.gpus.split(',')]
-        '''
+    '''
     devs = mx.gpu(0)
 
 
@@ -172,9 +172,10 @@ def actor_learner_thread(num):
 
             score += past_rewards[i]
 
+
+        copyTargetQNetwork(module, Qnet)
         module.update()
         logging.info('fps: %f err: %f score: %f T: %f'%(args.batch_size/(time.time()-tic), err/args.t_max, score.mean(), T))
-        copyTargetQNetwork(module, Qnet)
 
         if terminal:
             print 'Thread, ', num, 'Eposide end! reward ', ep_reward, T
