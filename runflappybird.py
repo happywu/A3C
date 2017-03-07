@@ -31,13 +31,13 @@ parser.add_argument('--input-length', type=int, default=4)
 
 parser.add_argument('--lr', type=float, default=0.0001)
 parser.add_argument('--wd', type=float, default=0)
-parser.add_argument('--t-max', type=int, default=32)
+parser.add_argument('--t-max', type=int, default=16)
 parser.add_argument('--gamma', type=float, default=0.99)
 parser.add_argument('--beta', type=float, default=0.08)
 
 parser.add_argument('--game', type=str, default='Breakout-v0')
 parser.add_argument('--num-threads', type=int, default=3)
-parser.add_argument('--eta', type=float, default=0.1)
+parser.add_argument('--eta', type=float, default=1)
 
 
 args = parser.parse_args()
@@ -67,7 +67,6 @@ def setup():
                              ('rewardInput',(args.batch_size, 1))],
                 label_shapes=None,
                 grad_req='add')
-
     module.init_params()
     # optimizer
     module.init_optimizer(kvstore=kv, optimizer='adam',
@@ -82,6 +81,7 @@ def action_select(act_dim, probs, eta):
 def actor_learner_thread(num):
     global TMAX, T
 
+    np.random.seed()
     module  = setup()
 
     copyTargetQNetwork(Qnet, module)
@@ -96,7 +96,6 @@ def actor_learner_thread(num):
 
     score = np.zeros((args.batch_size, 1))
     act_dim = 2
-
     while T < TMAX:
         s_batch = []
         past_rewards = []
@@ -122,13 +121,13 @@ def actor_learner_thread(num):
             probs = policy_out.asnumpy()[0]
             #action_index = [np.random.choice(act_dim, p=probs)]
             action_index = action_select(act_dim, probs, args.eta)
-            print 'prob', probs
             #action_index = np.argmax(probs)
-            #print action_index
 
             a_batch.append(action_index)
 
             _, r_t, terminal = gamedata.act(action_index)
+            if r_t>0 and t % 5 != 0:
+                r_t = 0
             r_t = np.array([r_t])
             ep_reward += r_t
             Done.append(terminal)
@@ -140,7 +139,7 @@ def actor_learner_thread(num):
             ep_t += 1
 
         if terminal:
-            R_t = np.zeros((1,1))
+            R_t = np.array([-0.1])
         else:
             value_out = module.get_outputs()[3]
             R_t = value_out.asnumpy()
