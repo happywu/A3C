@@ -38,6 +38,7 @@ parser.add_argument('--beta', type=float, default=0.08)
 
 parser.add_argument('--game', type=str, default='Breakout-v0')
 parser.add_argument('--num-threads', type=int, default=3)
+parser.add_argument('--eta', type=int, default=0.1)
 
 args = parser.parse_args()
 
@@ -87,6 +88,12 @@ def setup():
 
     return mod, dataiter
 
+def action_select(act_dim, probs, eta):
+    if(np.random.rand()<eta):
+        return [np.random.choice(act_dim)]
+    else:
+        return [np.argmax(probs)]
+
 def actor_learner_thread(num):
     global TMAX, T
     #kv = mx.kvstore.create(args.kv_store)
@@ -129,7 +136,7 @@ def actor_learner_thread(num):
             policy_log, value_loss, policy_out, value_out= module.get_outputs()
             V.append(value_out.asnumpy())
             probs = policy_out.asnumpy()[0]
-            action_index = [np.random.choice(act_dim, p=probs)]
+            action_index = action_select(act_dim, probs, args.eta)
 
             a_batch.append(action_index)
 
@@ -141,7 +148,6 @@ def actor_learner_thread(num):
             t += 1
             T += 1
             ep_t += 1
-            probs_summary_t += 1
 
         if terminal:
             R_t = np.zeros((1,1))
@@ -150,25 +156,16 @@ def actor_learner_thread(num):
             R_t = value_out.asnumpy()
 
         err = 0
-        for i in reversed(range(t_start, t)):
+        for i in reversed(range(t_start, t-1)):
             R_t = past_rewards[i] + args.gamma * R_t
-            action_t = np.zeros([act_dim])
-            action_t[a_batch[i]] = 1
-            # print mx.nd.arary(action_t), mx.nd.array(R_t)
-
-            #print 'past_reward', mx.nd.array(past_rewards[i])
-
             batch = mx.io.DataBatch(data=[s_batch[i][0],
-                mx.nd.array(past_rewards[i])], label=None)
+                mx.nd.array(R_t)], label=None)
 
             #print batch
             module.forward(batch, is_train=True)
 
             advs = np.zeros((1, act_dim))
-            #print a_batch[i]
             advs[:,a_batch[i]] = R_t - V[i]
-
-            err  += (advs ** 2).mean()
             advs = mx.nd.array(advs)
             #print 'Back', module.get_outputs()[0], advs
             module.backward(out_grads=[advs])
