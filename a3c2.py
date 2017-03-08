@@ -49,13 +49,13 @@ def save_params(save_pre, model, epoch):
 
 def copyTargetQNetwork(fromNetwork, toNetwork):
     lock.acquire()
-    arg_params, aux_params = fromNetwork.get_params()
-    try: 
-        toNetwork.init_params(initializer=None, arg_params=arg_params,
-                aux_params=aux_params, force_init=True)
-    except:
-        print 'from ', fromNetwork.get_params()
-        print 'to ', toNetwork.get_params()
+    gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
+            fromNetwork._exec_group.grad_arrays]
+    for gradsto, gradsfrom in zip(toNetwork._exec_group.grad_arrays,
+            gradfrom):
+        for gradto, gradfrom in zip(gradsto, gradsfrom):
+            gradto += gradfrom
+    toNetwork.update()
     lock.release()
 
 def setup():
@@ -65,6 +65,7 @@ def setup():
         mx.gpu(int(i)) for i in args.gpus.split(',')]
         '''
     devs = mx.gpu(0)
+
 
     dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
     act_dim = dataiter.act_dim
@@ -85,8 +86,9 @@ def setup():
         print 'True'
 
     mod.init_params()
+    # optimizer
     mod.init_optimizer(optimizer='adam',
-                optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
+                          optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
 
     return mod, dataiter
 
@@ -136,6 +138,7 @@ def actor_learner_thread(num):
         a_batch = []
         t = 0
         t_start = t
+
         V = []
         epoch += 1
         while not (terminal or ((t - t_start)  == args.t_max)):
@@ -189,9 +192,10 @@ def actor_learner_thread(num):
 
             score += past_rewards[i]
 
+
+        copyTargetQNetwork(module, Qnet)
         module.update()
         logging.info('fps: %f err: %f score: %f T: %f'%(args.batch_size/(time.time()-tic), err/args.t_max, score.mean(), T))
-        copyTargetQNetwork(module, Qnet)
 
         if terminal:
             print 'Thread, ', num, 'Eposide end! reward ', ep_reward, T
@@ -202,7 +206,7 @@ def actor_learner_thread(num):
         if args.save_every != 0 and epoch % args.save_every == 0:
             save_params(args.save_model_prefix, Qnet, epoch)
 
-            
+
 def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
     reload(logging)
     head = '%(asctime)-15s Node[' + str(rank) + '] %(message)s'
