@@ -70,13 +70,6 @@ def setup():
     act_dim = dataiter.act_dim
     net = sym.get_symbol_atari(act_dim)
 
-    '''
-    if args.load_epoch != 0:
-        mod = mx.module.load(args.model_prefix, args.load_epoch, load_optimizer_states=True, data_names=('data', 'rewardInput'),
-                             label_name=None)
-    else:
-    '''
-
     mod = mx.mod.Module(net, data_names=('data', 'rewardInput'),
                         label_names=None,context=devs)
 

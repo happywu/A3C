@@ -63,7 +63,6 @@ def copyTargetQNetwork(fromNetwork, toNetwork):
 
 def setup():
     kv = mx.kvstore.create(args.kv_store)
-    #devs = mx.gpu(0)
     devs = mx.cpu()
 
     net = sym.get_symbol_atari(2)
