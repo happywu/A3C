@@ -20,7 +20,7 @@ parser.add_argument('--log-file', type=str, help='the name of log file')
 parser.add_argument('--log-dir', type=str, default="./log", help='directory of the log file')
 parser.add_argument('--model-prefix', type=str, help='the prefix of the model to load')
 parser.add_argument('--save-model-prefix', type=str, help='the prefix of the model to save')
-parser.add_argument('--load-epoch', type=int, default=0, help="load the model on an epoch using the model-prefix")
+parser.add_argument('--load-epoch', type=int, help="load the model on an epoch using the model-prefix")
 
 parser.add_argument('--kv-store', type=str, default='device', help='the kvstore type')
 parser.add_argument('--gpus', type=str, help='the gpus will be used, e.g "0,1,2,3"')
@@ -63,10 +63,9 @@ def setup():
     '''
     devs = mx.cpu() if args.gpus is None else [
         mx.gpu(int(i)) for i in args.gpus.split(',')]
-        '''
+    '''
+
     devs = mx.gpu(0)
-
-
     dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
     act_dim = dataiter.act_dim
     net = sym.get_symbol_atari(act_dim)
@@ -79,13 +78,18 @@ def setup():
              label_shapes=None,
              grad_req='add')
 
+    model_prefix = args.model_prefix
+    save_model_prefix = args.save_model_prefix
+    if save_model_prefix is None:
+        save_model_prefix = model_prefix
 
-    if args.load_epoch !=0 :
-        load_sym, arg_params, aux_params = mx.model.load_checkpoint(args.model_prefix, args.load_epoch)
-        mod.set_params(arg_params=arg_params, aux_params=aux_params)
-        print 'True'
+    if args.load_epoch is not None:
+        assert model_prefix is not None
+        _, arg_params, aux_params = mx.model.load_checkpoint(model_prefix, args.load_epoch)
+    else:
+        arg_params = aux_params = None
 
-    mod.init_params()
+    mod.init_params(arg_params=arg_params, aux_params=aux_params)
     # optimizer
     mod.init_optimizer(optimizer='adam',
                           optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
@@ -233,19 +237,6 @@ def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
 def train():
 
     kv = mx.kvstore.create(args.kv_store)
-
-    model_prefix = args.model_prefix
-    if model_prefix is not None:
-        model_prefix += "-%d" % (kv.rank)
-    save_model_prefix = args.save_model_prefix
-    if save_model_prefix is None:
-        save_model_prefix = model_prefix
-
-    if args.load_epoch is not None:
-        assert model_prefix is not None
-        _, arg_params, aux_params = mx.model.load_checkpoint(model_prefix, args.load_epoch)
-    else:
-        arg_params = aux_params = None
 
     # logging
     np.set_printoptions(precision=3, suppress=True)
