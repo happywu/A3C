@@ -89,7 +89,6 @@ def setup():
     # optimizer
     mod.init_optimizer(optimizer='adam',
                           optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
-
     return mod, dataiter
 
 def action_select(act_dim, probs, epsilon):
