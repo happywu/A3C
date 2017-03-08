@@ -20,7 +20,7 @@ parser.add_argument('--log-file', type=str, help='the name of log file')
 parser.add_argument('--log-dir', type=str, default="./log", help='directory of the log file')
 parser.add_argument('--model-prefix', type=str, help='the prefix of the model to load')
 parser.add_argument('--save-model-prefix', type=str, help='the prefix of the model to save')
-parser.add_argument('--load-epoch', type=int, help="load the model on an epoch using the model-prefix")
+parser.add_argument('--load-epoch', type=int, default=0, help="load the model on an epoch using the model-prefix")
 
 parser.add_argument('--kv-store', type=str, default='device', help='the kvstore type')
 parser.add_argument('--gpus', type=str, help='the gpus will be used, e.g "0,1,2,3"')
@@ -38,9 +38,14 @@ parser.add_argument('--beta', type=float, default=0.08)
 
 parser.add_argument('--game', type=str, default='Breakout-v0')
 parser.add_argument('--num-threads', type=int, default=3)
-parser.add_argument('--eta', type=int, default=0.1)
+parser.add_argument('--epsilon', type=float, default=1)
+parser.add_argument('--anneal-epsilon-timesteps', type=int, default=1000000)
+parser.add_argument('--save-every', type=int, default=1000)
 
 args = parser.parse_args()
+
+def save_params(save_pre, model, epoch):
+    model.save_checkpoint(save_pre, epoch, save_optimizer_states=True)
 
 def copyTargetQNetwork(fromNetwork, toNetwork):
     lock.acquire()
@@ -61,38 +66,47 @@ def setup():
         '''
     devs = mx.gpu(0)
 
-
     dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
     act_dim = dataiter.act_dim
     net = sym.get_symbol_atari(act_dim)
 
+    '''
+    if args.load_epoch != 0:
+        mod = mx.module.load(args.model_prefix, args.load_epoch, load_optimizer_states=True, data_names=('data', 'rewardInput'),
+                             label_name=None)
+    else:
+    '''
+
     mod = mx.mod.Module(net, data_names=('data', 'rewardInput'),
                         label_names=None,context=devs)
 
-    '''
-    mod.bind(data_shapes=[('data', (args.batch_size, 12, 210, 160)),
-        ('rewardInput', (args.batch_size, 1))],
-            label_shapes=None,
-            grad_req='write')
-            '''
-
     mod.bind(data_shapes=[dataiter.provide_data[0],
-        ('rewardInput', (args.batch_size, 1))],
-            label_shapes=None,
-            grad_req='write')
-    #kv = mx.kvstore.create(args.kv_store)
+                          ('rewardInput', (args.batch_size, 1))],
+             label_shapes=None,
+             grad_req='add')
+
+
+    if args.load_epoch !=0 :
+        load_sym, arg_params, aux_params = mx.model.load_checkpoint(args.model_prefix, args.load_epoch)
+        mod.set_params(arg_params=arg_params, aux_params=aux_params)
+        print 'True'
+
     mod.init_params()
-    # optimizer
     mod.init_optimizer(optimizer='adam',
-                          optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
+                optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
 
     return mod, dataiter
 
-def action_select(act_dim, probs, eta):
-    if(np.random.rand()<eta):
+def action_select(act_dim, probs, epsilon):
+    if(np.random.rand()<epsilon):
         return [np.random.choice(act_dim)]
     else:
         return [np.argmax(probs)]
+
+def sample_final_epsilon():
+    final_espilons_ = np.array([0.1, 0.01, 0.5])
+    probabilities = np.array([0.4, 0.3, 0.3])
+    return np.random.choice(final_espilons_, 1, p=list(probabilities))[0]
 
 def actor_learner_thread(num):
     global TMAX, T
@@ -116,6 +130,12 @@ def actor_learner_thread(num):
     s_t = dataiter.data()
 
     score = np.zeros((args.batch_size, 1))
+
+    final_epsilon = sample_final_epsilon()
+    initial_epsilon = 1.0
+    epsilon = 1.0
+
+    epoch = 0
     while T < TMAX:
         tic = time.time()
         s_batch = []
@@ -123,8 +143,8 @@ def actor_learner_thread(num):
         a_batch = []
         t = 0
         t_start = t
-
         V = []
+        epoch += 1
         while not (terminal or ((t - t_start)  == args.t_max)):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = dataiter.data()
@@ -136,7 +156,11 @@ def actor_learner_thread(num):
             policy_log, value_loss, policy_out, value_out= module.get_outputs()
             V.append(value_out.asnumpy())
             probs = policy_out.asnumpy()[0]
-            action_index = action_select(act_dim, probs, args.eta)
+
+            action_index = action_select(act_dim, probs, epsilon)
+            # scale down eplision
+            if epsilon > final_epsilon:
+                epsilon -= (initial_epsilon - final_epsilon) / args.anneal_epsilon_timesteps
 
             a_batch.append(action_index)
 
@@ -181,9 +205,11 @@ def actor_learner_thread(num):
             ep_reward = 0
             terminal = False
             dataiter.reset()
+
+        if args.save_every != 0 and epoch % args.save_every == 0:
+            save_params(args.save_model_prefix, Qnet, epoch)
+
             
-
-
 def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
     reload(logging)
     head = '%(asctime)-15s Node[' + str(rank) + '] %(message)s'
