@@ -11,7 +11,7 @@ from datetime import datetime
 import time
 
 T = 0
-TMAX = 8000000
+TMAX = 80000000
 t_max = 32
 
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
@@ -39,7 +39,7 @@ parser.add_argument('--beta', type=float, default=0.08)
 parser.add_argument('--game', type=str, default='Breakout-v0')
 parser.add_argument('--num-threads', type=int, default=3)
 parser.add_argument('--epsilon', type=float, default=1)
-parser.add_argument('--anneal-epsilon-timesteps', type=int, default=1000000)
+parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=1000)
 
 args = parser.parse_args()
@@ -140,7 +140,7 @@ def actor_learner_thread(num):
         a_batch = []
         t = 0
         t_start = t
-
+        copyTargetQNetwork(Net, module)
         V = []
         epoch += 1
         while not (terminal or ((t - t_start)  == args.t_max)):
