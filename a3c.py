@@ -68,21 +68,14 @@ def setup():
     devs = mx.gpu(0)
     dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
     act_dim = dataiter.act_dim
-    net, loss_net = sym.get_symbol_atari(act_dim)
-
-    mod = mx.mod.Module(net, data_names=('data',),
-                        label_names=None,context=devs)
-
-    mod.bind(data_shapes=dataiter.provide_data,
-             label_shapes=None,
-             grad_req='write')
+    loss_net = sym.get_symbol_atari(act_dim)
 
     loss_mod = mx.mod.Module(loss_net, data_names=('data','rewardInput','actionInput'),
                              label_names=None,context=devs)
     loss_mod.bind(data_shapes=[dataiter.provide_data[0],
                                ('rewardInput',(args.batch_size, 1)),
                                ('actionInput', (args.batch_size, act_dim))],
-                  label_shapes=None, grad_req='write')
+                  label_shapes=None, grad_req='add')
 
     model_prefix = args.model_prefix
     save_model_prefix = args.save_model_prefix
@@ -95,15 +88,11 @@ def setup():
     else:
         arg_params = aux_params = None
 
-    mod.init_params(arg_params=arg_params, aux_params=aux_params)
-    # optimizer
-    mod.init_optimizer(optimizer='adam',
-                       optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
     loss_mod.init_params(arg_params=arg_params, aux_params=aux_params)
     # optimizer
     loss_mod.init_optimizer(optimizer='adam',
                        optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
-    return mod, loss_mod, dataiter
+    return loss_mod , dataiter
 
 def action_select(act_dim, probs, epsilon):
     if(np.random.rand()<epsilon):
@@ -120,10 +109,9 @@ def actor_learner_thread(num):
     global TMAX, T
     #kv = mx.kvstore.create(args.kv_store)
 
-    module, loss_module, dataiter = setup()
+    module, dataiter = setup()
 
     copyTargetQNetwork(Net, module)
-    copyTargetQNetwork(Lossnet, loss_module)
 
     act_dim = dataiter.act_dim
 
@@ -160,10 +148,13 @@ def actor_learner_thread(num):
             data = dataiter.data()
             s_batch.append(data[0])
             #print 'data', data
-            batch = mx.io.DataBatch(data=data, label=None)
+            temp_a = np.zeros((args.batch_size,act_dim))
+            batch = mx.io.DataBatch(data=[data[0],mx.nd.array([[0]]),
+                mx.nd.array(temp_a)], label=None)
+
             module.forward(batch, is_train=False)
 
-            policy_out, value_out = module.get_outputs()
+            policy_out, value_out, total_loss = module.get_outputs()
             V.append(value_out.asnumpy())
             probs = policy_out.asnumpy()[0]
 
@@ -201,23 +192,12 @@ def actor_learner_thread(num):
             batch = mx.io.DataBatch(data=[s_batch[i], mx.io.array(R_t),
                 a_batch[i]], label=None)
             #print s_batch[i], mx.io.array(R_t), a_batch[i]
-            loss_module.forward(batch, is_train=True)
-            loss_module.backward()
-        '''
-        print 'ddd'
-        print s_batch, R_batch, a_batch
-        print 'sss'
-        batch = mx.io.DataBatch(data=[s_batch, R_batch, a_batch], label=None)
-        '''
-        #print batch
-        '''
-        loss_module.forward(batch, is_train=True)
-        loss_module.backward()
+            module.forward(batch, is_train=True)
+            module.backward()
 
-        '''
         copyTargetQNetwork(module, Net)
-        copyTargetQNetwork(loss_module, Lossnet)
-        loss_module.update()
+        module.update()
+
         logging.info('fps: %f err: %f score: %f T: %f'%(args.batch_size/(time.time()-tic), err/args.t_max, score.mean(), T))
 
         if terminal:
@@ -261,8 +241,8 @@ def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
-    global Net, Lossnet, lock
-    Net, Lossnet, _ = setup()
+    global Net, lock
+    Net, _ = setup()
     lock = threading.Lock()
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
