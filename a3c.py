@@ -144,6 +144,7 @@ def actor_learner_thread(num):
 
         V = []
         epoch += 1
+        copyTargetQNetwork(Qnet, module)
         while not (terminal or ((t - t_start)  == args.t_max)):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = dataiter.data()
