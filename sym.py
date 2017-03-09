@@ -2,7 +2,6 @@ import mxnet as mx
 
 def get_symbol_atari(act_dim, isQnet=False):
     data = mx.symbol.Variable('data')
-    rewardInput = mx.sym.Variable('rewardInput')
     net = mx.symbol.Cast(data=data, dtype='float32')
     net = mx.symbol.Convolution(data=net, name='conv1', kernel=(8, 8), stride=(4, 4), num_filter=16)
     net = mx.symbol.Activation(data=net, name='relu1', act_type="relu")
@@ -14,14 +13,19 @@ def get_symbol_atari(act_dim, isQnet=False):
     ## policy network
     fc_policy = mx.symbol.FullyConnected(data=net, name='fc_policy', num_hidden=act_dim)
     policy = mx.symbol.SoftmaxActivation(data=fc_policy, name='policy')
-    policy_log = mx.symbol.log(policy)
     policy_out = mx.symbol.BlockGrad(data=policy, name='policy_out')
-
     ## value network
     value = mx.symbol.FullyConnected(data=net, name='fc_value', num_hidden=1)
-    value_loss = mx.symbol.MakeLoss(mx.symbol.square(rewardInput - value))
     value_out = mx.symbol.BlockGrad(data=value, name='value_out')
 
-    # policy_log needs out_grad when backward
-    return mx.symbol.Group([policy_log, value_loss, policy_out, value_out])
+    # loss
+    rewardInput = mx.symbol.Variable('rewardInput')
+    actionInput = mx.symbol.Variable('actionInput')
+    policy_log = mx.symbol.log(mx.symbol.sum(policy * actionInput, axis=1), name='policy_log')
+    policy_loss = (-policy_log * mx.symbol.sum(rewardInput - value))
+
+    value_loss = mx.symbol.mean(mx.symbol.square(rewardInput - value))
+    total_loss = mx.symbol.MakeLoss(policy_loss + (0.5 * value_loss))
+
+    return mx.symbol.Group([policy_out, value_out, total_loss])
 

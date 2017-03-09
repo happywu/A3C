@@ -11,7 +11,7 @@ from datetime import datetime
 import time
 
 T = 0
-TMAX = 8000000
+TMAX = 80000000
 t_max = 32
 
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
@@ -39,7 +39,7 @@ parser.add_argument('--beta', type=float, default=0.08)
 parser.add_argument('--game', type=str, default='Breakout-v0')
 parser.add_argument('--num-threads', type=int, default=3)
 parser.add_argument('--epsilon', type=float, default=1)
-parser.add_argument('--anneal-epsilon-timesteps', type=int, default=1000000)
+parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=1000)
 
 args = parser.parse_args()
@@ -50,9 +50,9 @@ def save_params(save_pre, model, epoch):
 def copyTargetQNetwork(fromNetwork, toNetwork):
     lock.acquire()
     gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
-            fromNetwork._exec_group.grad_arrays]
+                fromNetwork._exec_group.grad_arrays]
     for gradsto, gradsfrom in zip(toNetwork._exec_group.grad_arrays,
-            gradfrom):
+                                  gradfrom):
         for gradto, gradfrom in zip(gradsto, gradsfrom):
             gradto += gradfrom
     toNetwork.update()
@@ -68,15 +68,14 @@ def setup():
     devs = mx.gpu(0)
     dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
     act_dim = dataiter.act_dim
-    net = sym.get_symbol_atari(act_dim)
+    loss_net = sym.get_symbol_atari(act_dim)
 
-    mod = mx.mod.Module(net, data_names=('data', 'rewardInput'),
-                        label_names=None,context=devs)
-
-    mod.bind(data_shapes=[dataiter.provide_data[0],
-                          ('rewardInput', (args.batch_size, 1))],
-             label_shapes=None,
-             grad_req='add')
+    loss_mod = mx.mod.Module(loss_net, data_names=('data','rewardInput','actionInput'),
+                             label_names=None,context=devs)
+    loss_mod.bind(data_shapes=[dataiter.provide_data[0],
+                               ('rewardInput',(args.batch_size, 1)),
+                               ('actionInput', (args.batch_size, act_dim))],
+                  label_shapes=None, grad_req='add')
 
     model_prefix = args.model_prefix
     save_model_prefix = args.save_model_prefix
@@ -89,11 +88,11 @@ def setup():
     else:
         arg_params = aux_params = None
 
-    mod.init_params(arg_params=arg_params, aux_params=aux_params)
+    loss_mod.init_params(arg_params=arg_params, aux_params=aux_params)
     # optimizer
-    mod.init_optimizer(optimizer='adam',
-                          optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
-    return mod, dataiter
+    loss_mod.init_optimizer(optimizer='adam',
+                       optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
+    return loss_mod , dataiter
 
 def action_select(act_dim, probs, epsilon):
     if(np.random.rand()<epsilon):
@@ -112,7 +111,7 @@ def actor_learner_thread(num):
 
     module, dataiter = setup()
 
-    copyTargetQNetwork(Qnet, module)
+    copyTargetQNetwork(Net, module)
 
     act_dim = dataiter.act_dim
 
@@ -141,18 +140,21 @@ def actor_learner_thread(num):
         a_batch = []
         t = 0
         t_start = t
-
+        copyTargetQNetwork(Net, module)
         V = []
         epoch += 1
         while not (terminal or ((t - t_start)  == args.t_max)):
             # Perform action a_t according to policy pi(a_t | s_t)
             data = dataiter.data()
-            s_batch.append(data)
-            rewardInput = [[0]]
-            batch = mx.io.DataBatch(data=[data[0], mx.nd.array(rewardInput)], label=None)
+            s_batch.append(data[0])
+            #print 'data', data
+            temp_a = np.zeros((args.batch_size,act_dim))
+            batch = mx.io.DataBatch(data=[data[0],mx.nd.array([[0]]),
+                mx.nd.array(temp_a)], label=None)
+
             module.forward(batch, is_train=False)
 
-            policy_log, value_loss, policy_out, value_out= module.get_outputs()
+            policy_out, value_out, total_loss = module.get_outputs()
             V.append(value_out.asnumpy())
             probs = policy_out.asnumpy()[0]
 
@@ -161,9 +163,12 @@ def actor_learner_thread(num):
             if epsilon > final_epsilon:
                 epsilon -= (initial_epsilon - final_epsilon) / args.anneal_epsilon_timesteps
 
-            a_batch.append(action_index)
 
             r_t, terminal = dataiter.act(action_index)
+
+            action_index1 = np.zeros(act_dim)
+            action_index1[action_index]=1
+            a_batch.append(mx.io.array(action_index1.reshape((-1,act_dim))))
             ep_reward += r_t
 
             past_rewards.append(r_t.reshape((-1, 1)))
@@ -175,29 +180,24 @@ def actor_learner_thread(num):
         if terminal:
             R_t = np.zeros((1,1))
         else:
-            value_out = module.get_outputs()[3]
+            value_out = module.get_outputs()[1]
             R_t = value_out.asnumpy()
 
         err = 0
-        for i in reversed(range(t_start, t-1)):
+        R_batch = []
+        for i in reversed(range(t_start, t)):
             R_t = past_rewards[i] + args.gamma * R_t
-            batch = mx.io.DataBatch(data=[s_batch[i][0],
-                mx.nd.array(R_t)], label=None)
-
-            #print batch
-            module.forward(batch, is_train=True)
-
-            advs = np.zeros((1, act_dim))
-            advs[:,a_batch[i]] = R_t - V[i]
-            advs = mx.nd.array(advs)
-            #print 'Back', module.get_outputs()[0], advs
-            module.backward(out_grads=[advs])
-
+            R_batch.append(mx.io.array(R_t))
             score += past_rewards[i]
+            batch = mx.io.DataBatch(data=[s_batch[i], mx.io.array(R_t),
+                a_batch[i]], label=None)
+            #print s_batch[i], mx.io.array(R_t), a_batch[i]
+            module.forward(batch, is_train=True)
+            module.backward()
 
-
-        copyTargetQNetwork(module, Qnet)
+        copyTargetQNetwork(module, Net)
         module.update()
+
         logging.info('fps: %f err: %f score: %f T: %f'%(args.batch_size/(time.time()-tic), err/args.t_max, score.mean(), T))
 
         if terminal:
@@ -207,7 +207,7 @@ def actor_learner_thread(num):
             dataiter.reset()
 
         if args.save_every != 0 and epoch % args.save_every == 0:
-            save_params(args.save_model_prefix, Qnet, epoch)
+            save_params(args.save_model_prefix, Net, epoch)
 
 
 def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
@@ -241,8 +241,8 @@ def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
-    global Qnet, Pnet, lock
-    Qnet, _ = setup()
+    global Net, lock
+    Net, _ = setup()
     lock = threading.Lock()
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
@@ -250,11 +250,10 @@ def train():
     for t in actor_learner_threads:
         t.start()
 
-
     for t in actor_learner_threads:
         t.join()
 
-    #actor_learner_thread(0)
+        #actor_learner_thread(0)
 
 if __name__ == '__main__':
     train()
