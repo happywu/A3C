@@ -1,6 +1,6 @@
 import mxnet as mx
 
-def get_symbol_atari(act_dim, isQnet=False):
+def get_symbol_atari(act_dim):
     data = mx.symbol.Variable('data')
     net = mx.symbol.Cast(data=data, dtype='float32')
     net = mx.symbol.Convolution(data=net, name='conv1', kernel=(8, 8), stride=(4, 4), num_filter=16)
@@ -29,3 +29,22 @@ def get_symbol_atari(act_dim, isQnet=False):
 
     return mx.symbol.Group([policy_out, value_out, total_loss])
 
+def get_dqn_symbol(act_dim):
+    data = mx.symbol.Variable('data')
+    net = mx.symbol.Cast(data=data, dtype='float32')
+    net = mx.symbol.Convolution(data=net, name='conv1', kernel=(8, 8), stride=(4, 4), num_filter=16)
+    net = mx.symbol.Activation(data=net, name='relu1', act_type="relu")
+    net = mx.symbol.Convolution(data=net, name='conv2', kernel=(4, 4), stride=(2, 2), num_filter=32)
+    net = mx.symbol.Activation(data=net, name='relu2', act_type="relu")
+    net = mx.symbol.Flatten(data=net)
+    net = mx.symbol.FullyConnected(data=net, name='fc4', num_hidden=256)
+    net = mx.symbol.Activation(data=net, name='relu4', act_type="relu")
+    # Q Network
+    Qvalue = mx.symbol.FullyConnected(data=net, name='qvalue', num_hidden=act_dim)
+
+    rewardInput = mx.symbol.Variable('rewardInput')
+    actionInput = mx.symbol.Variable('actionInput')
+    temp1 = mx.symbol.sum(Qvalue * actionInput, axis=1, name='temp1')
+    loss = mx.symbol.MakeLoss(mx.symbol.square(rewardInput - temp1))
+    Q_output = mx.symbol.BlockGrad(data=Qvalue, name='q_out')
+    return mx.symbol.Group([loss, Q_output])
