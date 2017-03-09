@@ -22,8 +22,8 @@ def get_symbol_atari(act_dim, isQnet=False):
     rewardInput = mx.symbol.Variable('rewardInput')
     actionInput = mx.symbol.Variable('actionInput')
     policy_log = mx.symbol.log(mx.symbol.sum(policy * actionInput, axis=1))
-    policy_loss = -policy_log * (rewardInput - value)
+    policy_loss = -policy_log * mx.symbol.sum(rewardInput - value)
     value_loss = mx.symbol.mean(mx.symbol.square(rewardInput - value))
-    total_loss = policy_loss + (0.5 * value_loss)
-    return mx.symbol.Group(policy_out, value_out), total_loss
+    total_loss = mx.symbol.MakeLoss(policy_loss + (0.5 * value_loss))
+    return mx.symbol.Group([policy_out, value_out]), total_loss
 
