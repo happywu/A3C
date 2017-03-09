@@ -41,6 +41,8 @@ parser.add_argument('--num-threads', type=int, default=3)
 parser.add_argument('--epsilon', type=float, default=1)
 parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=1000)
+parser.add_argument('--network-update-frequency', type=int, default=32)
+parser.add_argument('--target-network-update-frequency', type=int, default=1000)
 
 args = parser.parse_args()
 
@@ -181,12 +183,17 @@ def actor_learner_thread(thread_id):
             # estimated reward according to target network
             batch = mx.io.DataBatch(data=[s_t1[0], mx.nd.array([[0]]),
                                           mx.nd.array(temp_a)], label=None)
-            target_loss, target_q_out = target_module.forward(batch, is_train=False)
+            #print s_t1[0], mx.nd.array([[0]]), mx.nd.array(temp_a)
+
+            target_module.forward(batch, is_train=False)
+            target_loss, target_q_out = target_module.get_outputs()
             clipped_r_t = np.clip(r_t, -1, 1)
             if terminal:
                 y_batch.append(clipped_r_t)
             else:
-                y_batch.append(clipped_r_t + args.gamma * np.max(target_q_out))
+                y_batch.append(clipped_r_t + args.gamma *
+                        np.max(target_q_out.asnumpy()))
+
 
             a_batch.append(a_t.reshape((-1,act_dim)))
             s_batch.append(s_t[0])
@@ -197,11 +204,13 @@ def actor_learner_thread(thread_id):
 
             ep_t += 1
             ep_reward += r_t
-            episode_ave_max_q += np.max(q_out)
+            episode_ave_max_q += np.max(q_out.asnumpy())
 
-            batch = mx.io.DataBatch(data=[s_t[0], mx.nd.array(y_batch[-1]), mx.nd.array(a_batch[-1])],
+            #print s_t[0], mx.nd.array([y_batch[-1]]), mx.nd.array(a_batch[-1])
+
+            batch = mx.io.DataBatch(data=[s_t[0], mx.nd.array([y_batch[-1]]), mx.nd.array(a_batch[-1])],
                                     label=None)
-            module.forward(data=batch, is_train=True)
+            module.forward(batch, is_train=True)
             module.backward()
 
             if t % args.target_network_update_frequency == 0:

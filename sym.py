@@ -44,7 +44,8 @@ def get_dqn_symbol(act_dim):
 
     rewardInput = mx.symbol.Variable('rewardInput')
     actionInput = mx.symbol.Variable('actionInput')
-    temp1 = mx.symbol.sum(Qvalue * actionInput, axis=1, name='temp1')
-    loss = mx.symbol.MakeLoss(mx.symbol.square(rewardInput - temp1))
+    temp1 = mx.symbol.sum(Qvalue * actionInput, keepdims=True, name='temp1')
+    loss = mx.symbol.MakeLoss(mx.symbol.square(rewardInput -
+        temp1))
     Q_output = mx.symbol.BlockGrad(data=Qvalue, name='q_out')
     return mx.symbol.Group([loss, Q_output])
