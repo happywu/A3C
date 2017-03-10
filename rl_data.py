@@ -1,6 +1,9 @@
 import mxnet as mx
 import numpy as np
 import gym
+from skimage.transform import resize
+from skimage.color import rgb2gray
+from collections import deque
 import cv2
 import math
 import Queue
@@ -12,83 +15,78 @@ def env_step(args):
     return args[0].step(args[1])
 
 class RLDataIter(object):
-    def __init__(self, input_length, web_viz=True):
+    def __init__(self, resized_width, resized_height, agent_history_length):
         super(RLDataIter, self).__init__()
+        self.resized_width = resized_width
+        self.resized_height = resized_height
+        self.agent_history_length = agent_history_length
         self.env = self.make_env()
-        self.state_ = None
-        self.input_length = input_length
-        self.act_dim = self.env[0].action_space.n
 
+        self.act_dim = self.env.action_space.n
+        if (self.env.spec.id == 'Pong-v0' or self.env.spec.id == 'Breakout-v0'):
+            self.act_dim = 3
 
-        self.reset()
-
+        self.state_buffer = deque()
+        self.state_ = np.zeros((self.agent_history_length, self.resized_width, self.resized_height))
         self.provide_data = [mx.io.DataDesc('data', self.state_.shape,
             np.uint8)]
 
-        self.web_viz = web_viz
-
-        if web_viz:
-            self.queue = Queue.Queue()
-            self.thread = Thread(target=make_web, args=(self.queue,))
-            self.thread.daemon = True
-            self.thread.start()
-
     def make_env(self):
         raise NotImplementedError()
 
-    def reset(self):
-        #self.state_ = np.tile(
-        #    np.asarray(self.env.reset(), dtype=np.uint8).transpose((2, 0, 1)),
-        #    (1, self.input_length, 1, 1))
-        self.state_ = np.tile(
-                np.asarray([env.reset() for env in self.env],
-                    dtype=np.uint8).transpose((0, 3, 1, 2)), 
-                (1, self.input_length, 1, 1))
+    def get_initial_state(self):
 
-    def visual(self):
-        raise NotImplementedError()
+        # reset game, clear state buffer
+        self.state_buffer = deque()
 
-    def act(self, action):
-        new = [env.step(act) for env, act in zip(self.env, action)]
-        #new = [self.env.step(action)]
+        x_t = self.env.reset()
+        x_t = self.get_preprocessed_frame(x_t)
+        s_t = np.stack((x_t, x_t, x_t, x_t), axis=0)
 
-        reward = np.asarray([i[1] for i in new], dtype=np.float32)
-        done = np.asarray([i[2] for i in new], dtype=np.float32)
+        # initial state, agent_history_length-1 empty state
+        for i in range(self.agent_history_length-1):
+            self.state_buffer.append(x_t)
 
+        return s_t
 
-        channels = self.state_.shape[1]/self.input_length
-        state = np.zeros_like(self.state_)
-        state[:,:-channels,:,:] = self.state_[:,channels:,:,:]
-        for i, (ob, env) in enumerate(zip(new, self.env)):
-            if ob[2]:
-                state[i,-channels:,:,:] = env.reset().transpose((2,0,1))
-            else:
-                state[i,-channels:,:,:] = ob[0].transpose((2,0,1))
-        self.state_ = state
+    def get_preprocessed_frame(self, observation):
+        """
+        See Methods->Preprocessing in Mnih et al.
+        1) Get image grayscale
+        2) Rescale image
+        """
+        return resize(rgb2gray(observation), (self.resized_width, self.resized_height))
 
-        if self.web_viz:
-            try:
-                while self.queue.qsize() > 10:
-                    self.queue.get(False)
-            except Empty:
-                pass
-            frame = self.visual()
-            self.queue.put(frame)
+    def act(self, action_index):
+        """
+        Excecutes an action in the gym environment.
+        Builds current state (concatenation of agent_history_length-1 previous frames and current one).
+        Pops oldest frame, adds current frame to the state buffer.
+        Returns current state.
+        """
 
-        return reward, done
+        x_t1, r_t, terminal, info = self.env.step(self.gym_actions[action_index])
+        x_t1 = self.get_preprocessed_frame(x_t1)
+
+        previous_frames = np.array(self.state_buffer)
+        s_t1 = np.empty((self.agent_history_length, self.resized_height, self.resized_width))
+        s_t1[:self.agent_history_length-1, ...] = previous_frames
+        s_t1[self.agent_history_length-1] = x_t1
+
+        # Pop the oldest frame, add the current frame to the queue
+        self.state_buffer.popleft()
+        self.state_buffer.append(x_t1)
+        self.state_ = s_t1
+
+        return s_t1, r_t, terminal, info
 
     def data(self):
-        return [mx.nd.array(self.state_, dtype=np.uint8)]
-
+        return mx.nd.array(self.state_, dtype=np.uint8)
 
 class GymDataIter(RLDataIter):
-    def __init__(self, game, input_length, web_viz=False):
+    def __init__(self, game, resized_width, resized_height, agent_history_length):
         self.game = game
-        super(GymDataIter, self).__init__(input_length, web_viz=web_viz)
+        super(GymDataIter, self).__init__(resized_width, resized_height, agent_history_length)
 
     def make_env(self):
-        return [gym.make(self.game)]
-
-    def visual(self):
-        data = self.state_[:4, -self.state_.shape[1]/self.input_length:, :, :]
-        return visual(np.asarray(data, dtype=np.uint8), False)
+        return gym.make(self.game)
