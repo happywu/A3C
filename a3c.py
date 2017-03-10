@@ -45,6 +45,8 @@ parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
 
+parser.add_argument('--game-source', type=str, default='Gym')
+
 args = parser.parse_args()
 
 def save_params(save_pre, model, epoch):
@@ -68,9 +70,14 @@ def setup():
         mx.gpu(int(i)) for i in args.gpus.split(',')]
     '''
 
-    devs = mx.gpu(0)
-    dataiter = rl_data.GymDataIter(args.game, args.resized_width,
-            args.resized_height, args.agent_history_length)
+    #devs = mx.gpu(0)
+    devs = mx.cpu()
+    if (args.game_source=='Gym'):
+        dataiter = rl_data.GymDataIter(args.game, args.resized_width,
+                                       args.resized_height, args.agent_history_length)
+    else:
+        dataiter = rl_data.FlappyBirdIter(args.resized_width, args.resized_height, args.agent_history_length, visual=True)
+
     act_dim = dataiter.act_dim
     loss_net = sym.get_symbol_atari(act_dim)
 
@@ -148,6 +155,7 @@ def actor_learner_thread(num):
         copyTargetQNetwork(Net, module)
         V = []
         epoch += 1
+        print 'start!'
         while not (terminal or ((t - t_start)  == args.t_max)):
             s_batch.append(s_t)
             temp_a = np.zeros((args.batch_size,act_dim))
@@ -160,6 +168,7 @@ def actor_learner_thread(num):
             policy_out, value_out, total_loss = module.get_outputs()
             V.append(value_out.asnumpy())
             probs = policy_out.asnumpy()[0]
+            print probs
 
             action_index = action_select(act_dim, probs, epsilon)
             # scale down eplision
