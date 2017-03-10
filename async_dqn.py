@@ -43,6 +43,10 @@ parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=1000)
 parser.add_argument('--network-update-frequency', type=int, default=32)
 parser.add_argument('--target-network-update-frequency', type=int, default=1000)
+parser.add_argument('--resized-width', type=int, default=84)
+parser.add_argument('--resized-height', type=int, default=84)
+parser.add_argument('--agent-history-length', type=int, default=4)
+parser.add_argument('--game-source', type=str, default='Gym')
 
 args = parser.parse_args()
 
@@ -74,13 +78,21 @@ def setup():
     '''
 
     devs = mx.gpu(0)
-    dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
+
+    if(args.game_source=='Gym'):
+        dataiter = rl_data.GymDataIter(args.game, args.resized_width,
+                args.resized_height, args.agent_history_length)
+    else:
+        dataiter = rl_data.FlappyBirdIter(args.resized_width,
+                args.resized_height, args.agent_history_length, visual=True)
+
     act_dim = dataiter.act_dim
     network = sym.get_dqn_symbol(act_dim)
 
     mod = mx.mod.Module(network, data_names=('data','rewardInput','actionInput'),
                              label_names=None,context=devs)
-    mod.bind(data_shapes=[dataiter.provide_data[0],
+    mod.bind(data_shapes=[('data', (args.batch_size, args.agent_history_length,
+        args.resized_width, args.resized_height)),
                                ('rewardInput',(args.batch_size, 1)),
                                ('actionInput', (args.batch_size, act_dim))],
                   label_shapes=None, grad_req='add')
@@ -93,11 +105,12 @@ def setup():
     target_network = sym.get_dqn_symbol(act_dim)
     target_mod = mx.mod.Module(target_network, data_names=('data','rewardInput','actionInput'),
                         label_names=None,context=devs)
-    target_mod.bind(data_shapes=[dataiter.provide_data[0],
-                          ('rewardInput',(args.batch_size, 1)),
-                          ('actionInput', (args.batch_size, act_dim))],
-             label_shapes=None, grad_req='add')
 
+    target_mod.bind(data_shapes=[('data', (args.batch_size, args.agent_history_length,
+        args.resized_width, args.resized_height)),
+                               ('rewardInput',(args.batch_size, 1)),
+                               ('actionInput', (args.batch_size, act_dim))],
+                  label_shapes=None, grad_req='add')
     target_mod.init_params()
     # optimizer
     target_mod.init_optimizer(optimizer='adam',
@@ -148,9 +161,8 @@ def actor_learner_thread(thread_id):
         copyTargetQNetwork(Net, target_module)
 
         epoch += 1
-        dataiter.reset()
         terminal = False
-        s_t = dataiter.data()
+        s_t = dataiter.get_initial_state()
 
         ep_reward = 0
         episode_ave_max_q = 0
@@ -160,7 +172,7 @@ def actor_learner_thread(thread_id):
         while True:
             # Forward q network, get Q(s,a) values
             temp_a = np.zeros((args.batch_size,act_dim))
-            batch = mx.io.DataBatch(data=[s_t[0],mx.nd.array([[0]]),
+            batch = mx.io.DataBatch(data=[mx.nd.array([s_t]),mx.nd.array([[0]]),
                                           mx.nd.array(temp_a)], label=None)
             module.forward(batch, is_train=False)
             loss, q_out = module.get_outputs()
@@ -175,13 +187,10 @@ def actor_learner_thread(thread_id):
                 epsilon -= (initial_epsilon - final_epsilon) / args.anneal_epsilon_timesteps
 
             # play one step game
-            r_t, terminal = dataiter.act(action_index)
-
-            # get next state
-            s_t1 = dataiter.data()
+            s_t1, r_t, terminal, info = dataiter.act(action_index)
 
             # estimated reward according to target network
-            batch = mx.io.DataBatch(data=[s_t1[0], mx.nd.array([[0]]),
+            batch = mx.io.DataBatch(data=[mx.nd.array([s_t1]), mx.nd.array([[0]]),
                                           mx.nd.array(temp_a)], label=None)
             #print s_t1[0], mx.nd.array([[0]]), mx.nd.array(temp_a)
 
@@ -206,9 +215,10 @@ def actor_learner_thread(thread_id):
             ep_reward += r_t
             episode_ave_max_q += np.max(q_out.asnumpy())
 
-            #print s_t[0], mx.nd.array([y_batch[-1]]), mx.nd.array(a_batch[-1])
+            #print mx.nd.array([s_t]), mx.nd.array([[y_batch[-1]]]), mx.nd.array(a_batch[-1])
 
-            batch = mx.io.DataBatch(data=[s_t[0], mx.nd.array([y_batch[-1]]), mx.nd.array(a_batch[-1])],
+            batch = mx.io.DataBatch(data=[mx.nd.array([s_t]),
+                mx.nd.array([[y_batch[-1]]]), mx.nd.array(a_batch[-1])],
                                     label=None)
             module.forward(batch, is_train=True)
             module.backward()

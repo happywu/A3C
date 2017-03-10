@@ -19,7 +19,7 @@ class RLDataIter(object):
         self.provide_data = mx.io.DataDesc('data', self.state_.shape,
             np.uint8)
 
-    def make_env(self):
+    def make_env(self,visual=False):
         raise NotImplementedError()
 
     def get_initial_state(self):
@@ -62,7 +62,7 @@ class GymDataIter(RLDataIter):
 
         return s_t
 
-    def make_env(self):
+    def make_env(self,visual=False):
         return gym.make(self.game)
 
     def act(self, action_index):
@@ -93,7 +93,7 @@ class FlappyBirdIter(RLDataIter):
         self.act_dim = 2
         super(FlappyBirdIter, self).__init__(resized_width, resized_height, agent_history_length, visual)
 
-    def make_env(self, visual):
+    def make_env(self, visual=False):
         game = FlappyBird()
         return PLE(game, fps=30, display_screen=visual)
 
