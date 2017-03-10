@@ -42,7 +42,7 @@ parser.add_argument('--epsilon', type=float, default=1)
 parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=1000)
 parser.add_argument('--network-update-frequency', type=int, default=32)
-parser.add_argument('--target-network-update-frequency', type=int, default=1000)
+parser.add_argument('--target-network-update-frequency', type=int, default=100)
 parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
@@ -53,6 +53,16 @@ args = parser.parse_args()
 def save_params(save_pre, model, epoch):
     model.save_checkpoint(save_pre, epoch, save_optimizer_states=True)
 
+def clear_grad(module):
+    for grads in module._exec_group.grad_arrays:
+        for grad in grads:
+            grad -= grad
+    '''
+    for i in range(len(module._exec_group.grad_arrays)):
+        for j in range(len(module._exec_group.grad_arrays[i])):
+            #module._exec_group.grad_arrays[i][j] = mx.nd.zeros(module._exec_group.grad_arrays[i][j].shape)
+            module._exec_group.grad_arrays[i][j] -= module._exec_group.grad_arrays[i][j]
+    '''
 def asynchronize_network(fromNetwork, toNetwork):
     lock.acquire()
     gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
@@ -61,8 +71,19 @@ def asynchronize_network(fromNetwork, toNetwork):
                                   gradfrom):
         for gradto, gradfrom in zip(gradsto, gradsfrom):
             gradto += gradfrom
+
     toNetwork.update()
+    clear_grad(toNetwork)
     lock.release()
+
+def test_grad(net):
+    gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
+                net._exec_group.grad_arrays]
+    print 'before add ,from grad', gradfrom[1][0].asnumpy()
+    net.update()
+    gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
+            net._exec_group.grad_arrays]
+    print 'before add ,from grad', gradfrom[1][0].asnumpy()
 
 
 def copyTargetQNetwork(fromNetwork, toNetwork):
@@ -70,23 +91,27 @@ def copyTargetQNetwork(fromNetwork, toNetwork):
     arg_params, aux_params = fromNetwork.get_params()
     toNetwork.init_params(initializer=None, arg_params=arg_params, aux_params=aux_params, force_init=True)
 
-def setup():
+def setup(isGlobal=False):
 
     '''
     devs = mx.cpu() if args.gpus is None else [
         mx.gpu(int(i)) for i in args.gpus.split(',')]
     '''
 
-    devs = mx.gpu(0)
+    #devs = mx.gpu(0)
+    devs = mx.cpu()
 
-    if(args.game_source=='Gym'):
-        dataiter = rl_data.GymDataIter(args.game, args.resized_width,
-                args.resized_height, args.agent_history_length)
+    if(isGlobal==False):
+        if(args.game_source=='Gym'):
+            dataiter = rl_data.GymDataIter(args.game, args.resized_width,
+                                           args.resized_height, args.agent_history_length)
+        else:
+            dataiter = rl_data.FlappyBirdIter(args.resized_width,
+                                              args.resized_height, args.agent_history_length, visual=True)
+        act_dim = dataiter.act_dim
     else:
-        dataiter = rl_data.FlappyBirdIter(args.resized_width,
-                args.resized_height, args.agent_history_length, visual=True)
+        act_dim = 2
 
-    act_dim = dataiter.act_dim
     network = sym.get_dqn_symbol(act_dim)
 
     mod = mx.mod.Module(network, data_names=('data','rewardInput','actionInput'),
@@ -115,7 +140,10 @@ def setup():
     # optimizer
     target_mod.init_optimizer(optimizer='adam',
                        optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
-    return mod, target_mod, dataiter
+    if(isGlobal==False):
+        return mod, target_mod, dataiter
+    else:
+        return mod, target_mod
 
 def action_select(act_dim, probs, epsilon):
     if(np.random.rand()<epsilon):
@@ -144,26 +172,26 @@ def actor_learner_thread(thread_id):
     score = np.zeros((args.batch_size, 1))
 
     final_epsilon = sample_final_epsilon()
-    initial_epsilon = 1.0
-    epsilon = 1.0
+    initial_epsilon = 0.5
+    epsilon = 0.5
 
     epoch = 0
     s_batch = []
     a_batch = []
     y_batch = []
 
+    copyTargetQNetwork(Net, module)
+    copyTargetQNetwork(Net, target_module)
+    clear_grad(module)
+    clear_grad(target_module)
+
+    t = 0
+
     while T < TMAX:
         tic = time.time()
-        t = 0
-        t_start = t
-
-        copyTargetQNetwork(Net, module)
-        copyTargetQNetwork(Net, target_module)
-
         epoch += 1
         terminal = False
         s_t = dataiter.get_initial_state()
-
         ep_reward = 0
         episode_ave_max_q = 0
         ep_t = 0
@@ -178,7 +206,9 @@ def actor_learner_thread(thread_id):
             loss, q_out = module.get_outputs()
 
             # select action using e-greedy
-            action_index = action_select(act_dim, q_out, epsilon)
+            action_index = action_select(act_dim, q_out.asnumpy(), epsilon)
+            #print q_out.asnumpy(), action_index
+
             a_t = np.zeros([act_dim])
             a_t[action_index] = 1
 
@@ -215,8 +245,6 @@ def actor_learner_thread(thread_id):
             ep_reward += r_t
             episode_ave_max_q += np.max(q_out.asnumpy())
 
-            #print mx.nd.array([s_t]), mx.nd.array([[y_batch[-1]]]), mx.nd.array(a_batch[-1])
-
             batch = mx.io.DataBatch(data=[mx.nd.array([s_t]),
                 mx.nd.array([[y_batch[-1]]]), mx.nd.array(a_batch[-1])],
                                     label=None)
@@ -224,6 +252,7 @@ def actor_learner_thread(thread_id):
             module.backward()
 
             if t % args.target_network_update_frequency == 0:
+                copyTargetQNetwork(Net, TargetNet)
                 copyTargetQNetwork(Net, target_module)
 
             if t % args.network_update_frequency == 0 or terminal:
@@ -233,6 +262,13 @@ def actor_learner_thread(thread_id):
 
                 asynchronize_network(module, Net)
                 module.update()
+
+                '''
+                gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
+                            module._exec_group.grad_arrays]
+                print 'before update, grad', gradfrom[1][0].asnumpy()
+                '''
+                clear_grad(module)
 
             if terminal:
                 print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q/float(ep_t)), "/ EPSILON PROGRESS", t/float(args.anneal_epsilon_timesteps)
@@ -270,17 +306,20 @@ def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
-    global Net, lock
-    Net, TargetNet, _  = setup()
+    global Net, TargetNet, lock
+    Net, TargetNet = setup(isGlobal=True)
     lock = threading.Lock()
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
 
+    '''
     for t in actor_learner_threads:
         t.start()
 
     for t in actor_learner_threads:
         t.join()
+    '''
+    actor_learner_thread(0)
 
 if __name__ == '__main__':
     train()
