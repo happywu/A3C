@@ -41,6 +41,9 @@ parser.add_argument('--num-threads', type=int, default=3)
 parser.add_argument('--epsilon', type=float, default=1)
 parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=1000)
+parser.add_argument('--resized-width', type=int, default=84)
+parser.add_argument('--resized-height', type=int, default=84)
+parser.add_argument('--agent-history-length', type=int, default=4)
 
 args = parser.parse_args()
 
@@ -66,15 +69,19 @@ def setup():
     '''
 
     devs = mx.gpu(0)
-    dataiter = rl_data.GymDataIter(args.game, args.input_length, web_viz=False)
+    dataiter = rl_data.GymDataIter(args.game, args.resized_width,
+            args.resized_height, args.agent_history_length)
     act_dim = dataiter.act_dim
     loss_net = sym.get_symbol_atari(act_dim)
 
     loss_mod = mx.mod.Module(loss_net, data_names=('data','rewardInput','actionInput'),
                              label_names=None,context=devs)
-    loss_mod.bind(data_shapes=[dataiter.provide_data[0],
-                               ('rewardInput',(args.batch_size, 1)),
-                               ('actionInput', (args.batch_size, act_dim))],
+    loss_mod.bind(data_shapes=[('data', (args.batch_size,
+        args.agent_history_length, args.resized_width, args.resized_height)),
+                               ('rewardInput',(args.batch_size,
+                                    1)),
+                               ('actionInput', (args.batch_size,
+                                    act_dim))],
                   label_shapes=None, grad_req='add')
 
     model_prefix = args.model_prefix
@@ -121,10 +128,8 @@ def actor_learner_thread(num):
 
     probs_summary_t = 0
 
-    #s_t = env.get_initial_state()
-    dataiter.reset()
+    s_t = dataiter.get_initial_state()
     terminal = False
-    s_t = dataiter.data()
 
     score = np.zeros((args.batch_size, 1))
 
@@ -144,12 +149,10 @@ def actor_learner_thread(num):
         V = []
         epoch += 1
         while not (terminal or ((t - t_start)  == args.t_max)):
-            # Perform action a_t according to policy pi(a_t | s_t)
-            data = dataiter.data()
-            s_batch.append(data[0])
-            #print 'data', data
+            s_batch.append(s_t)
             temp_a = np.zeros((args.batch_size,act_dim))
-            batch = mx.io.DataBatch(data=[data[0],mx.nd.array([[0]]),
+
+            batch = mx.io.DataBatch(data=[mx.nd.array([s_t]),mx.nd.array([[0]]),
                 mx.nd.array(temp_a)], label=None)
 
             module.forward(batch, is_train=False)
@@ -164,18 +167,19 @@ def actor_learner_thread(num):
                 epsilon -= (initial_epsilon - final_epsilon) / args.anneal_epsilon_timesteps
 
 
-            r_t, terminal = dataiter.act(action_index)
+            s_t1, r_t, terminal, info = dataiter.act(action_index)
 
             action_index1 = np.zeros(act_dim)
             action_index1[action_index]=1
             a_batch.append(mx.io.array(action_index1.reshape((-1,act_dim))))
             ep_reward += r_t
 
-            past_rewards.append(r_t.reshape((-1, 1)))
+            past_rewards.append(r_t)
 
             t += 1
             T += 1
             ep_t += 1
+            s_t = s_t1
 
         if terminal:
             R_t = np.zeros((1,1))
@@ -189,9 +193,8 @@ def actor_learner_thread(num):
             R_t = past_rewards[i] + args.gamma * R_t
             R_batch.append(mx.io.array(R_t))
             score += past_rewards[i]
-            batch = mx.io.DataBatch(data=[s_batch[i], mx.io.array(R_t),
+            batch = mx.io.DataBatch(data=[mx.nd.array([s_batch[i]]), mx.io.array(R_t),
                 a_batch[i]], label=None)
-            #print s_batch[i], mx.io.array(R_t), a_batch[i]
             module.forward(batch, is_train=True)
             module.backward()
 
@@ -204,7 +207,7 @@ def actor_learner_thread(num):
             print 'Thread, ', num, 'Eposide end! reward ', ep_reward, T
             ep_reward = 0
             terminal = False
-            dataiter.reset()
+            s_t = dataiter.get_initial_state()
 
         if args.save_every != 0 and epoch % args.save_every == 0:
             save_params(args.save_model_prefix, Net, epoch)
@@ -245,7 +248,8 @@ def train():
     Net, _ = setup()
     lock = threading.Lock()
 
-    actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
+    actor_learner_threads = [threading.Thread(target=actor_learner_thread,
+        args=(thread_id,)) for thread_id in range(args.num_threads)]
 
     for t in actor_learner_threads:
         t.start()

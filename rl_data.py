@@ -28,8 +28,8 @@ class RLDataIter(object):
 
         self.state_buffer = deque()
         self.state_ = np.zeros((self.agent_history_length, self.resized_width, self.resized_height))
-        self.provide_data = [mx.io.DataDesc('data', self.state_.shape,
-            np.uint8)]
+        self.provide_data = mx.io.DataDesc('data', self.state_.shape,
+            np.uint8)
 
     def make_env(self):
         raise NotImplementedError()
@@ -65,7 +65,7 @@ class RLDataIter(object):
         Returns current state.
         """
 
-        x_t1, r_t, terminal, info = self.env.step(self.gym_actions[action_index])
+        x_t1, r_t, terminal, info = self.env.step(action_index)
         x_t1 = self.get_preprocessed_frame(x_t1)
 
         previous_frames = np.array(self.state_buffer)
