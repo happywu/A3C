@@ -8,51 +8,11 @@ from threading import Thread
 import time
 from flask import Flask, render_template, Response
 
-def make_web(queue):
-    app = Flask(__name__)
-
-    @app.route('/')
-    def index():
-        return render_template('index.html')
-
-    def gen():
-        while True:
-            frame = queue.get()
-            _, frame = cv2.imencode('.JPEG', frame)
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame.tostring() + b'\r\n')
-
-    @app.route('/video_feed')
-    def video_feed():
-        return Response(gen(),
-                        mimetype='multipart/x-mixed-replace; boundary=frame')
-
-    try:
-        app.run(host='0.0.0.0', port=8889)
-    except:
-        print 'unable to open port'
-
-def visual(X, show=True):
-    X = X.transpose((0, 2, 3, 1))
-    N = X.shape[0]
-    n = int(math.ceil(math.sqrt(N)))
-    h = X.shape[1]
-    w = X.shape[2]
-    buf = np.zeros((h*n, w*n, X.shape[3]), dtype=np.uint8)
-    for i in range(N):
-        x = i%n
-        y = i/n
-        buf[h*y:h*(y+1), w*x:w*(x+1), :] = X[i]
-    if show:
-        cv2.imshow('a', buf)
-        cv2.waitKey(1)
-    return buf
-
 def env_step(args):
     return args[0].step(args[1])
 
 class RLDataIter(object):
-    def __init__(self, input_length, web_viz=False):
+    def __init__(self, input_length, web_viz=True):
         super(RLDataIter, self).__init__()
         self.env = self.make_env()
         self.state_ = None
@@ -132,19 +92,3 @@ class GymDataIter(RLDataIter):
     def visual(self):
         data = self.state_[:4, -self.state_.shape[1]/self.input_length:, :, :]
         return visual(np.asarray(data, dtype=np.uint8), False)
-
-if __name__ == '__main__':
-    batch_size = 64
-    dataiter = GymDataIter('Breakout-v0', batch_size, 4)
-    dataiter.reset()
-    tic = time.time()
-    for _ in range(10):
-        #data = dataiter.next().data[0].asnumpy().astype(np.uint8)
-        #visual(data[:,-data.shape[1]/dataiter.input_length:,:,:])
-        for _ in range(100):
-            dataiter.act([env.action_space.sample() for env in dataiter.env])
-            dataiter.clear_history()
-            dataiter.next()
-        print batch_size*100/(time.time() - tic)
-        tic = time.time()
-
