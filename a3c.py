@@ -52,7 +52,12 @@ args = parser.parse_args()
 def save_params(save_pre, model, epoch):
     model.save_checkpoint(save_pre, epoch, save_optimizer_states=True)
 
-def copyTargetQNetwork(fromNetwork, toNetwork):
+def clear_grad(module):
+    for grads in module._exec_group.grad_arrays:
+        for grad in grads:
+            grad -= grad
+
+def asynchronize_network(fromNetwork, toNetwork):
     lock.acquire()
     gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
                 fromNetwork._exec_group.grad_arrays]
@@ -60,8 +65,15 @@ def copyTargetQNetwork(fromNetwork, toNetwork):
                                   gradfrom):
         for gradto, gradfrom in zip(gradsto, gradsfrom):
             gradto += gradfrom
+
     toNetwork.update()
+    clear_grad(toNetwork)
     lock.release()
+
+
+def copyTargetQNetwork(fromNetwork, toNetwork):
+    arg_params, aux_params = fromNetwork.get_params()
+    toNetwork.init_params(initializer=None, arg_params=arg_params, aux_params=aux_params, force_init=True)
 
 def setup():
 
@@ -153,13 +165,13 @@ def actor_learner_thread(num):
         t = 0
         t_start = t
         copyTargetQNetwork(Net, module)
+        clear_grad(module)
         V = []
         epoch += 1
-        print 'start!'
+
         while not (terminal or ((t - t_start)  == args.t_max)):
             s_batch.append(s_t)
             temp_a = np.zeros((args.batch_size,act_dim))
-
             batch = mx.io.DataBatch(data=[mx.nd.array([s_t]),mx.nd.array([[0]]),
                 mx.nd.array(temp_a)], label=None)
 
@@ -207,10 +219,11 @@ def actor_learner_thread(num):
             module.forward(batch, is_train=True)
             module.backward()
 
-        copyTargetQNetwork(module, Net)
+        asynchronize_network(module, Net)
         module.update()
+        clear_grad(module)
 
-        logging.info('fps: %f err: %f score: %f T: %f'%(args.batch_size/(time.time()-tic), err/args.t_max, score.mean(), T))
+        logging.info('fps: %f err: %f score: %f T: %f'%(args.batch_size/(time.time()-tic), err/args.t_max, ep_reward, T))
 
         if terminal:
             print 'Thread, ', num, 'Eposide end! reward ', ep_reward, T

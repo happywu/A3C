@@ -172,8 +172,8 @@ def actor_learner_thread(thread_id):
     score = np.zeros((args.batch_size, 1))
 
     final_epsilon = sample_final_epsilon()
-    initial_epsilon = 0.5
-    epsilon = 0.5
+    initial_epsilon = 0.2
+    epsilon = 0.2
 
     epoch = 0
     s_batch = []
