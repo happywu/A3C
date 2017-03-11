@@ -37,7 +37,7 @@ parser.add_argument('--gamma', type=float, default=0.99)
 parser.add_argument('--beta', type=float, default=0.08)
 
 parser.add_argument('--game', type=str, default='Breakout-v0')
-parser.add_argument('--num-threads', type=int, default=3)
+parser.add_argument('--num-threads', type=int, default=1)
 parser.add_argument('--epsilon', type=float, default=1)
 parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=1000)
@@ -79,11 +79,7 @@ def asynchronize_network(fromNetwork, toNetwork):
 def test_grad(net):
     gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
                 net._exec_group.grad_arrays]
-    print 'before add ,from grad', gradfrom[1][0].asnumpy()
-    net.update()
-    gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
-            net._exec_group.grad_arrays]
-    print 'before add ,from grad', gradfrom[1][0].asnumpy()
+    print 'grad', np.sum(gradfrom[6][0].asnumpy(), axis=1)
 
 
 def copyTargetQNetwork(fromNetwork, toNetwork):
@@ -98,8 +94,8 @@ def setup(isGlobal=False):
         mx.gpu(int(i)) for i in args.gpus.split(',')]
     '''
 
-    #devs = mx.gpu(0)
-    devs = mx.cpu()
+    devs = mx.gpu(1)
+    #devs = mx.cpu()
 
     if(isGlobal==False):
         if(args.game_source=='Gym'):
@@ -122,10 +118,12 @@ def setup(isGlobal=False):
                                ('actionInput', (args.batch_size, act_dim))],
                   label_shapes=None, grad_req='add')
 
-    mod.init_params()
+    initializer = mx.init.Xavier(factor_type='in', magnitude=2.34)
+
+    mod.init_params(initializer)
     # optimizer
     mod.init_optimizer(optimizer='adam',
-                            optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
+            optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 10})
 
     target_network = sym.get_dqn_symbol(act_dim)
     target_mod = mx.mod.Module(target_network, data_names=('data','rewardInput','actionInput'),
@@ -136,10 +134,10 @@ def setup(isGlobal=False):
                                ('rewardInput',(args.batch_size, 1)),
                                ('actionInput', (args.batch_size, act_dim))],
                   label_shapes=None, grad_req='add')
-    target_mod.init_params()
+    target_mod.init_params(initializer)
     # optimizer
-    target_mod.init_optimizer(optimizer='adam',
-                       optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3})
+    target_mod.init_optimizer(optimizer='adam', 
+            optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 10.0 })
     if(isGlobal==False):
         return mod, target_mod, dataiter
     else:
@@ -180,10 +178,6 @@ def actor_learner_thread(thread_id):
     a_batch = []
     y_batch = []
 
-    copyTargetQNetwork(Net, module)
-    copyTargetQNetwork(Net, target_module)
-    clear_grad(module)
-    clear_grad(target_module)
 
     t = 0
 
@@ -196,6 +190,11 @@ def actor_learner_thread(thread_id):
         episode_ave_max_q = 0
         ep_t = 0
 
+        copyTargetQNetwork(Net, module)
+        copyTargetQNetwork(Net, target_module)
+        clear_grad(module)
+        clear_grad(target_module)
+        ep_loss = 0
         # perform an episode
         while True:
             # Forward q network, get Q(s,a) values
@@ -249,6 +248,7 @@ def actor_learner_thread(thread_id):
                 mx.nd.array([[y_batch[-1]]]), mx.nd.array(a_batch[-1])],
                                     label=None)
             module.forward(batch, is_train=True)
+            ep_loss += module.get_outputs()[0].asnumpy()
             module.backward()
 
             if t % args.target_network_update_frequency == 0:
@@ -261,7 +261,16 @@ def actor_learner_thread(thread_id):
                 y_batch = []
 
                 asynchronize_network(module, Net)
+                #test_grad(Net)
                 module.update()
+                #param = module.get_params()
+                #print 'loss', ep_loss
+                #print 'gradient', test_grad(module)
+                #print "module", np.sum(param[0]['qvalue_weight'].asnumpy(), axis=1)
+                #param = Net.get_params()
+                #print 'Net', np.sum(param[0]['qvalue_weight'].asnumpy(), axis=1)
+                #print 'weight', param['arg_params']['qvalue_weight'].asnumpy()
+                ep_loss = 0
 
                 '''
                 gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
@@ -307,19 +316,17 @@ def train():
     np.set_printoptions(precision=3, suppress=True)
 
     global Net, TargetNet, lock
-    Net, TargetNet = setup(isGlobal=True)
+    Net, TargetNet, _ = setup()
     lock = threading.Lock()
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id,)) for thread_id in range(args.num_threads)]
 
-    '''
     for t in actor_learner_threads:
         t.start()
 
     for t in actor_learner_threads:
         t.join()
-    '''
-    actor_learner_thread(0)
+    #actor_learner_thread(0)
 
 if __name__ == '__main__':
     train()
