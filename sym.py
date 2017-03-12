@@ -29,7 +29,7 @@ def get_symbol_atari(act_dim):
 
     return mx.symbol.Group([policy_out, value_out, total_loss])
 
-def get_dqn_symbol(act_dim):
+def get_dqn_symbol(act_dim, ispredict=False):
     data = mx.symbol.Variable('data')
     net = mx.symbol.Cast(data=data, dtype='float32')
     net = mx.symbol.Convolution(data=net, name='conv1', kernel=(8, 8), stride=(4, 4), num_filter=16)
@@ -44,8 +44,11 @@ def get_dqn_symbol(act_dim):
 
     rewardInput = mx.symbol.Variable('rewardInput')
     actionInput = mx.symbol.Variable('actionInput')
-    temp1 = mx.symbol.sum(Qvalue * actionInput, keepdims=True, name='temp1')
+    temp1 = mx.symbol.sum(Qvalue * actionInput, axis=1, keepdims=True, name='temp1')
     loss = mx.symbol.MakeLoss(mx.symbol.square(rewardInput -
-        temp1))
-    Q_output = mx.symbol.BlockGrad(data=Qvalue, name='q_out')
-    return mx.symbol.Group([loss, Q_output])
+                                               temp1))
+    if (ispredict):
+        # Target q network, only predict
+        return Qvalue
+    else :
+        return loss
