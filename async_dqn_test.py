@@ -37,7 +37,7 @@ parser.add_argument('--num-epochs', type=int, default=120,
                     help='the number of training epochs')
 parser.add_argument('--num-examples', type=int, default=1000000,
                     help='the number of training examples')
-parser.add_argument('--batch-size', type=int, default=1)
+parser.add_argument('--batch-size', type=int, default=4)
 parser.add_argument('--input-length', type=int, default=4)
 
 parser.add_argument('--lr', type=float, default=0.0001)
@@ -57,6 +57,7 @@ parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
 parser.add_argument('--game-source', type=str, default='Gym')
+parser.add_argument('--replay-memory-length', type=int, default=32)
 
 args = parser.parse_args()
 
@@ -69,12 +70,6 @@ def clear_grad(module):
     for grads in module._exec_group.grad_arrays:
         for grad in grads:
             grad -= grad
-    '''
-    for i in range(len(module._exec_group.grad_arrays)):
-        for j in range(len(module._exec_group.grad_arrays[i])):
-            #module._exec_group.grad_arrays[i][j] = mx.nd.zeros(module._exec_group.grad_arrays[i][j].shape)
-            module._exec_group.grad_arrays[i][j] -= module._exec_group.grad_arrays[i][j]
-    '''
 
 
 def asynchronize_network(fromNetwork, toNetwork):
@@ -199,7 +194,7 @@ def actor_learner_thread(thread_id):
     terminal_batch = []
 
     # here use replayMemory to fix batch size for training
-    replayMemory = deque()
+    replayMemory = []
 
     while T < TMAX:
         tic = time.time()
@@ -239,6 +234,9 @@ def actor_learner_thread(thread_id):
                 r_t = np.clip(r_t, -1, 1)
                 t += 1
                 T += 1
+                ep_t += 1
+                ep_reward += r_t
+                episode_ave_max_q += np.max(q_out.asnumpy())
 
                 s_batch.append(s_t)
                 s1_batch.append(s_t1)
@@ -246,7 +244,6 @@ def actor_learner_thread(thread_id):
                 r_batch.append(r_t)
                 R_batch.append(r_t)
                 terminal_batch.append(terminal)
-
 
             if terminal:
                 R_t = 0
@@ -258,73 +255,35 @@ def actor_learner_thread(thread_id):
             for i in reversed(range(t_start, t)):
                 R_t = r_batch[i] + args.gamma * R_t
                 R_batch[i] = R_t
-            for i in range((t_start, t)):
-                replayMemory.append((s_batch[i], a_batch[i], r_batch[i], s1_batch[i], R_batch[i], terminal_batch[i]))
-                if len(replayMemory) > args.replay_memory_length:
-                    replayMemory.popleft()
-            
+                if len(replayMemory) + len(s_batch) > args.replay_memory_length:
+                    replayMemory[0:(len(s_batch) + len(replayMemory)
+                                    ) - args.replay_memory_length] = []
+                    replayMemory.append(
+                        (s_batch, a_batch, r_batch, s1_batch, R_batch, terminal_batch))
+
+            minibatch = random.sample(replayMemory, args.batch_size)
+
+            state_batch = ([data[0] for data in minibatch])
+            action_batch = ([data[1] for data in minibatch])
+            R_batch = ([data[4] for data in minibatch])
+
             # estimated reward according to target network
-            batch = mx.io.DataBatch(data=[mx.nd.array([s_t1]), mx.nd.array([[0]]),
-                                          mx.nd.array(temp_a)], label=None)
-            #print s_t1[0], mx.nd.array([[0]]), mx.nd.array(temp_a)
+            print mx.nd.array(state_batch), mx.nd.array(R_batch), mx.nd.array(action_batch)
+            batch = mx.io.DataBatch(data=[mx.nd.array(state_batch), mx.nd.array(R_batch),
+                                          mx.nd.array(action_batch)], label=None)
 
-            target_module.forward(batch, is_train=False)
-            target_loss, target_q_out = target_module.get_outputs()
-            clipped_r_t = np.clip(r_t, -1, 1)
-            if terminal:
-                y_batch.append(clipped_r_t)
-            else:
-                y_batch.append(clipped_r_t + args.gamma *
-                               np.max(target_q_out.asnumpy()))
-
-            a_batch.append(a_t.reshape((-1, act_dim)))
-            s_batch.append(s_t[0])
-
-            s_t = s_t1
-            t += 1
-            T += 1
-
-            ep_t += 1
-            ep_reward += r_t
-            episode_ave_max_q += np.max(q_out.asnumpy())
-
-            batch = mx.io.DataBatch(data=[mx.nd.array([s_t]),
-                                          mx.nd.array([[y_batch[-1]]]), mx.nd.array(a_batch[-1])],
-                                    label=None)
-            module.forward(batch, is_train=True)
-            ep_loss += module.get_outputs()[0].asnumpy()
-            module.backward()
-
-            if t % args.target_network_update_frequency == 0:
-                copyTargetQNetwork(Net, TargetNet)
-                copyTargetQNetwork(Net, target_module)
+            with lock:
+                Module.forward(batch, is_train=True)
+                Module.backward()
+                Module.update()
 
             if t % args.network_update_frequency == 0 or terminal:
-                s_batch = []
-                a_batch = []
-                y_batch = []
-
-                asynchronize_network(module, Net)
-                #test_grad(Net)
-                module.update()
-                #param = module.get_params()
-                #print 'loss', ep_loss
-                #print 'gradient', test_grad(module)
-                #print "module", np.sum(param[0]['qvalue_weight'].asnumpy(), axis=1)
-                #param = Net.get_params()
-                #print 'Net', np.sum(param[0]['qvalue_weight'].asnumpy(), axis=1)
-                #print 'weight', param['arg_params']['qvalue_weight'].asnumpy()
-                ep_loss = 0
-
-                '''
-                gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
-                            module._exec_group.grad_arrays]
-                print 'before update, grad', gradfrom[1][0].asnumpy()
-                '''
-                clear_grad(module)
+                copyTargetQNetwork(Module, Target_module)
 
             if terminal:
                 print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q / float(ep_t)), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+                ep_reward = 0
+                episode_ave_max_q = 0
                 break
 
         if args.save_every != 0 and epoch % args.save_every == 0:
@@ -373,6 +332,7 @@ def train():
     for t in actor_learner_threads:
         t.join()
     #actor_learner_thread(0)
+
 
 if __name__ == '__main__':
     train()
