@@ -38,7 +38,7 @@ parser.add_argument('--num-epochs', type=int, default=120,
                     help='the number of training epochs')
 parser.add_argument('--num-examples', type=int, default=1000000,
                     help='the number of training examples')
-parser.add_argument('--batch-size', type=int, default=4)
+parser.add_argument('--batch-size', type=int, default=16)
 parser.add_argument('--input-length', type=int, default=4)
 
 parser.add_argument('--lr', type=float, default=0.0001)
@@ -106,14 +106,14 @@ def setup(isGlobal=False):
         mx.gpu(int(i)) for i in args.gpus.split(',')]
     '''
 
-    devs = mx.gpu(1)
-    #devs = mx.cpu()
+    #devs = mx.gpu(1)
+    devs = mx.cpu()
 
     if(args.game_source == 'Gym'):
         dataiter = rl_data.GymDataIter(args.game, args.resized_width,
                                        args.resized_height, args.agent_history_length)
     else:
-        dataiter = rl_data.FlappyBirdIter(args.resized_width,
+        dataiter = rl_data.MultiThreadFlappyBirdIter(args.resized_width,
                                           args.resized_height, args.agent_history_length, visual=True)
     act_dim = dataiter.act_dim
 
@@ -130,7 +130,7 @@ def setup(isGlobal=False):
     mod.init_params(initializer)
     # optimizer
     mod.init_optimizer(optimizer='adam',
-                       optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 1.0})
+                       optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 10.0})
 
     target_mod = mx.mod.Module(sym.get_dqn_symbol(act_dim, ispredict=True), data_names=('data',),
                                label_names=None, context=devs)
@@ -141,7 +141,7 @@ def setup(isGlobal=False):
     target_mod.init_params(initializer)
     # optimizer
     target_mod.init_optimizer(optimizer='adam',
-                              optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 1.0})
+                              optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 10.0})
     if(isGlobal == False):
         return mod, target_mod, dataiter
     else:
@@ -168,7 +168,7 @@ def actor_learner_thread(thread_id):
         dataiter = rl_data.GymDataIter(args.game, args.resized_width,
                                        args.resized_height, args.agent_history_length)
     else:
-        dataiter = rl_data.FlappyBirdIter(args.resized_width,
+        dataiter = rl_data.MultiThreadFlappyBirdIter(args.resized_width,
                                           args.resized_height, args.agent_history_length, visual=True)
     act_dim = dataiter.act_dim
 
@@ -181,8 +181,8 @@ def actor_learner_thread(thread_id):
     score = np.zeros((args.batch_size, 1))
 
     final_epsilon = sample_final_epsilon()
-    initial_epsilon = 0.2
-    epsilon = 0.2
+    initial_epsilon = 0.1
+    epsilon = 0.1
 
     epoch = 0
     t = 0
@@ -222,12 +222,13 @@ def actor_learner_thread(thread_id):
                 #       about one simple api. Needs to change to qnet here.
                 batch = mx.io.DataBatch(data=[mx.nd.array([s_t])], 
                     label=None)
-                Target_module.forward(batch, is_train=False)
-                q_out = Target_module.get_outputs()[0].asnumpy()
+                with lock:
+                    Target_module.forward(batch, is_train=False)
+                    q_out = Target_module.get_outputs()[0].asnumpy()
 
                 # select action using e-greedy
                 action_index = action_select(act_dim, q_out, epsilon)
-                print q_out, action_index
+                #print q_out, action_index
 
                 a_t = np.zeros([act_dim])
                 a_t[action_index] = 1
@@ -252,13 +253,15 @@ def actor_learner_thread(thread_id):
                 r_batch.append(r_t)
                 R_batch.append(r_t)
                 terminal_batch.append(terminal)
+                s_t = s_t1
 
             if terminal:
                 R_t = 0
             else:
                 batch = mx.io.DataBatch(data=[mx.nd.array([s_t1])], label=None)
-                Target_module.forward(batch, is_train=False)
-                R_t = np.max(Target_module.get_outputs()[0].asnumpy())
+                with lock:
+                    Target_module.forward(batch, is_train=False)
+                    R_t = np.max(Target_module.get_outputs()[0].asnumpy())
 
             for i in reversed(range(0, t-t_start)):
                 R_t = r_batch[i] + args.gamma * R_t
@@ -273,6 +276,8 @@ def actor_learner_thread(thread_id):
                             R_batch[i],
                             terminal_batch[i]))
 
+            if len(replayMemory)< args.batch_size:
+                continue
             minibatch = random.sample(replayMemory, args.batch_size)
             state_batch = ([data[0] for data in minibatch])
             action_batch = ([data[1] for data in minibatch])
@@ -290,7 +295,8 @@ def actor_learner_thread(thread_id):
                 Module.update()
 
             if t % args.network_update_frequency == 0 or terminal:
-                copyTargetQNetwork(Module, Target_module)
+                with lock:
+                    copyTargetQNetwork(Module, Target_module)
 
             if terminal:
                 print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q / float(ep_t)), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
@@ -299,7 +305,7 @@ def actor_learner_thread(thread_id):
                 break
 
         if args.save_every != 0 and epoch % args.save_every == 0:
-            save_params(args.save_model_prefix, Net, epoch)
+            save_params(args.save_model_prefix, Module, epoch)
 
 
 def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
@@ -338,12 +344,12 @@ def train():
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(
         thread_id,)) for thread_id in range(args.num_threads)]
-
     for t in actor_learner_threads:
         t.start()
 
     for t in actor_learner_threads:
         t.join()
+
     #actor_learner_thread(0)
 
 

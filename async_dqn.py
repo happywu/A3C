@@ -94,23 +94,18 @@ def setup(isGlobal=False):
         mx.gpu(int(i)) for i in args.gpus.split(',')]
     '''
 
-    devs = mx.gpu(1)
-    #devs = mx.cpu()
+    #devs = mx.gpu(1)
+    devs = mx.cpu()
 
-    if(isGlobal==False):
-        if(args.game_source=='Gym'):
-            dataiter = rl_data.GymDataIter(args.game, args.resized_width,
-                                           args.resized_height, args.agent_history_length)
-        else:
-            dataiter = rl_data.FlappyBirdIter(args.resized_width,
-                                              args.resized_height, args.agent_history_length, visual=True)
-        act_dim = dataiter.act_dim
+    if(args.game_source=='Gym'):
+        dataiter = rl_data.GymDataIter(args.game, args.resized_width,
+                                       args.resized_height, args.agent_history_length)
     else:
-        act_dim = 2
+        dataiter = rl_data.FlappyBirdIter(args.resized_width,
+                                          args.resized_height, args.agent_history_length, visual=True)
+    act_dim = dataiter.act_dim
 
-    network = sym.get_dqn_symbol(act_dim)
-
-    mod = mx.mod.Module(network, data_names=('data','rewardInput','actionInput'),
+    mod = mx.mod.Module(sym.get_dqn_symbol(act_dim, ispredict=False), data_names=('data','rewardInput','actionInput'),
                              label_names=None,context=devs)
     mod.bind(data_shapes=[('data', (args.batch_size, args.agent_history_length,
         args.resized_width, args.resized_height)),
@@ -123,21 +118,18 @@ def setup(isGlobal=False):
     mod.init_params(initializer)
     # optimizer
     mod.init_optimizer(optimizer='adam',
-            optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 10})
+            optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 1.0})
 
-    target_network = sym.get_dqn_symbol(act_dim)
-    target_mod = mx.mod.Module(target_network, data_names=('data','rewardInput','actionInput'),
+    target_mod = mx.mod.Module(sym.get_dqn_symbol(act_dim, ispredict=True), data_names=('data',),
                         label_names=None,context=devs)
 
-    target_mod.bind(data_shapes=[('data', (args.batch_size, args.agent_history_length,
-        args.resized_width, args.resized_height)),
-                               ('rewardInput',(args.batch_size, 1)),
-                               ('actionInput', (args.batch_size, act_dim))],
+    target_mod.bind(data_shapes=[('data', (1, args.agent_history_length,
+        args.resized_width, args.resized_height)),],
                   label_shapes=None, grad_req='add')
     target_mod.init_params(initializer)
     # optimizer
     target_mod.init_optimizer(optimizer='adam', 
-            optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 10.0 })
+            optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 1.0 })
     if(isGlobal==False):
         return mod, target_mod, dataiter
     else:

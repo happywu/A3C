@@ -36,7 +36,7 @@ parser.add_argument('--num-epochs', type=int, default=120,
                     help='the number of training epochs')
 parser.add_argument('--num-examples', type=int, default=1000000,
                     help='the number of training examples')
-parser.add_argument('--batch-size', type=int, default=16)
+parser.add_argument('--batch-size', type=int, default=8)
 parser.add_argument('--input-length', type=int, default=4)
 
 parser.add_argument('--lr', type=float, default=0.0001)
@@ -56,7 +56,7 @@ parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
 parser.add_argument('--game-source', type=str, default='Gym')
-parser.add_argument('--replay-memory-length', type=int, default=10000)
+parser.add_argument('--replay-memory-length', type=int, default=5000)
 parser.add_argument('--observe-time', type=str, default=100)
 
 args = parser.parse_args()
@@ -70,7 +70,7 @@ def setup():
     devs = mx.cpu()
 
     dataiter = rl_data.FlappyBirdIter(args.resized_width,
-                                      args.resized_height, args.agent_history_length, visual=False)
+                                      args.resized_height, args.agent_history_length, visual=True)
     act_dim = 2
 
     mod = mx.mod.Module(sym.get_dqn_symbol(act_dim, ispredict=False), data_names=('data', 'rewardInput', 'actionInput'),
@@ -142,6 +142,7 @@ def Train():
         # perform an episode
         while True:
             # Forward q network, get Q(s,a) values
+            #print s_t
             temp_a = np.zeros((args.batch_size, act_dim))
             batch = mx.io.DataBatch(data=[mx.nd.array([s_t])], label=None)
             target_module.forward(batch, is_train=False)
@@ -163,9 +164,13 @@ def Train():
             # play one step game
             s_t1, r_t, terminal, info = dataiter.act(action_index)
 
+            r_t = np.clip(r_t, -1, 1)
+            ep_reward += r_t
+
             replayMemory.append((s_t, a_t, r_t, s_t1, terminal))
             if (len(replayMemory) > args.replay_memory_length):
                 replayMemory.popleft()
+            s_t = s_t1
 
             t += 1
             # sample random minibatch and train q network
@@ -196,6 +201,8 @@ def Train():
                 arg_params,aux_params=module.get_params() #arg={}
                 target_module.init_params(initializer=None, arg_params=arg_params,aux_params=aux_params,force_init=True)
             if (terminal):
+                print 'score', ep_reward
+                ep_reward = 0
                 break
 
 def train():

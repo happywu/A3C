@@ -41,6 +41,7 @@ def get_dqn_symbol(act_dim, ispredict=False):
     net = mx.symbol.Activation(data=net, name='relu4', act_type="relu")
     # Q Network
     Qvalue = mx.symbol.FullyConnected(data=net, name='qvalue', num_hidden=act_dim)
+    Qvalue_out = mx.symbol.BlockGrad(data=Qvalue, name='qout')
 
     rewardInput = mx.symbol.Variable('rewardInput')
     actionInput = mx.symbol.Variable('actionInput')
@@ -51,4 +52,4 @@ def get_dqn_symbol(act_dim, ispredict=False):
         # Target q network, only predict
         return Qvalue
     else :
-        return loss
+        return mx.symbol.Group([loss, Qvalue_out])
