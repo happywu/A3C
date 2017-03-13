@@ -7,8 +7,9 @@ import logging
 import os
 import threading
 import gym
-from datetime import datetime
 import time
+import random
+from datetime import datetime
 from collections import deque
 
 T = 0
@@ -47,7 +48,7 @@ parser.add_argument('--gamma', type=float, default=0.99)
 parser.add_argument('--beta', type=float, default=0.08)
 
 parser.add_argument('--game', type=str, default='Breakout-v0')
-parser.add_argument('--num-threads', type=int, default=1)
+parser.add_argument('--num-threads', type=int, default=4)
 parser.add_argument('--epsilon', type=float, default=1)
 parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=1000)
@@ -105,8 +106,8 @@ def setup(isGlobal=False):
         mx.gpu(int(i)) for i in args.gpus.split(',')]
     '''
 
-    #devs = mx.gpu(1)
-    devs = mx.cpu()
+    devs = mx.gpu(1)
+    #devs = mx.cpu()
 
     if(args.game_source == 'Gym'):
         dataiter = rl_data.GymDataIter(args.game, args.resized_width,
@@ -122,7 +123,7 @@ def setup(isGlobal=False):
                                     args.resized_width, args.resized_height)),
                           ('rewardInput', (args.batch_size, 1)),
                           ('actionInput', (args.batch_size, act_dim))],
-             label_shapes=None, grad_req='add')
+             label_shapes=None, grad_req='write')
 
     initializer = mx.init.Xavier(factor_type='in', magnitude=2.34)
 
@@ -136,7 +137,7 @@ def setup(isGlobal=False):
 
     target_mod.bind(data_shapes=[('data', (1, args.agent_history_length,
                                            args.resized_width, args.resized_height)), ],
-                    label_shapes=None, grad_req='add')
+                    label_shapes=None, grad_req='null')
     target_mod.init_params(initializer)
     # optimizer
     target_mod.init_optimizer(optimizer='adam',
@@ -210,16 +211,23 @@ def actor_learner_thread(thread_id):
         while True:
             # perform n steps
             t_start = t
+            s_batch = []
+            s1_batch = []
+            a_batch = []
+            r_batch = []
+            R_batch = []
             while not (terminal or ((t - t_start) == args.t_max)):
-                batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(np.zeros(
-                    args.batch_size, 1), mx.nd.array(np.zeros(args.batch_size, act_dim)))], label=None)
-
-                Module.forward(batch, is_train=False)
-                q_out = Module.get_outputs()[1].asnumpy()
+                # TODO here should be qnet forwarding, not target net. However,
+                #       dealing with variable length input in mxnet is not
+                #       about one simple api. Needs to change to qnet here.
+                batch = mx.io.DataBatch(data=[mx.nd.array([s_t])], 
+                    label=None)
+                Target_module.forward(batch, is_train=False)
+                q_out = Target_module.get_outputs()[0].asnumpy()
 
                 # select action using e-greedy
                 action_index = action_select(act_dim, q_out, epsilon)
-                #print q_out.asnumpy(), action_index
+                print q_out, action_index
 
                 a_t = np.zeros([act_dim])
                 a_t[action_index] = 1
@@ -236,7 +244,7 @@ def actor_learner_thread(thread_id):
                 T += 1
                 ep_t += 1
                 ep_reward += r_t
-                episode_ave_max_q += np.max(q_out.asnumpy())
+                episode_ave_max_q += np.max(q_out)
 
                 s_batch.append(s_t)
                 s1_batch.append(s_t1)
@@ -252,25 +260,29 @@ def actor_learner_thread(thread_id):
                 Target_module.forward(batch, is_train=False)
                 R_t = np.max(Target_module.get_outputs()[0].asnumpy())
 
-            for i in reversed(range(t_start, t)):
+            for i in reversed(range(0, t-t_start)):
                 R_t = r_batch[i] + args.gamma * R_t
                 R_batch[i] = R_t
-                if len(replayMemory) + len(s_batch) > args.replay_memory_length:
-                    replayMemory[0:(len(s_batch) + len(replayMemory)
-                                    ) - args.replay_memory_length] = []
-                    replayMemory.append(
-                        (s_batch, a_batch, r_batch, s1_batch, R_batch, terminal_batch))
+
+
+            if len(replayMemory) + len(s_batch) > args.replay_memory_length:
+                replayMemory[0:(len(s_batch) + len(replayMemory)) - args.replay_memory_length] = []
+            for i in range(0, t-t_start):
+                replayMemory.append(
+                        (s_batch[i], a_batch[i], r_batch[i], s1_batch[i],
+                            R_batch[i],
+                            terminal_batch[i]))
 
             minibatch = random.sample(replayMemory, args.batch_size)
-
             state_batch = ([data[0] for data in minibatch])
             action_batch = ([data[1] for data in minibatch])
             R_batch = ([data[4] for data in minibatch])
 
             # estimated reward according to target network
-            print mx.nd.array(state_batch), mx.nd.array(R_batch), mx.nd.array(action_batch)
-            batch = mx.io.DataBatch(data=[mx.nd.array(state_batch), mx.nd.array(R_batch),
-                                          mx.nd.array(action_batch)], label=None)
+            #print mx.nd.array(state_batch), mx.nd.array([R_batch]), mx.nd.array(action_batch)
+            batch = mx.io.DataBatch(data=[mx.nd.array(state_batch),
+                mx.nd.array(np.reshape(R_batch,(-1,1))),
+                mx.nd.array(action_batch)], label=None)
 
             with lock:
                 Module.forward(batch, is_train=True)
@@ -320,6 +332,7 @@ def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
+    global Module, Target_module, lock
     Module, Target_module, _ = setup()
     lock = threading.Lock()
 
