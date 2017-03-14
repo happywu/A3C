@@ -258,6 +258,7 @@ def actor_learner_thread(thread_id):
             Net.add_gradients_from_module(module)
             Net.clip_gradients(10)
             Net.update()
+            Net.clear_gradients()
 
         module.update()
         module.clear_gradients()
@@ -338,10 +339,12 @@ def train():
     np.set_printoptions(precision=3, suppress=True)
 
     global Net, lock, epoch
-    #dataiter = getGame()
+    if args.game_source == 'Gym':
+        dataiter = getGame()
+        act_dim = dataiter.act_dim
+    else:
+        act_dim = 2
     epoch = 0
-
-    act_dim = 2
     Net = getNet(act_dim)
     lock = threading.Lock()
 
