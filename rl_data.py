@@ -50,6 +50,8 @@ class GymDataIter(RLDataIter):
         self.act_dim = self.env.action_space.n
         if (self.env.spec.id == 'Pong-v0' or self.env.spec.id == 'Breakout-v0'):
             self.act_dim = 3
+        sed = np.random.randint(1000)
+        self.env.seed(sed)
 
     def get_initial_state(self):
 
