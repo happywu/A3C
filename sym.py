@@ -17,17 +17,22 @@ def get_symbol_atari(act_dim):
     ## value network
     value = mx.symbol.FullyConnected(data=net, name='fc_value', num_hidden=1)
     value_out = mx.symbol.BlockGrad(data=value, name='value_out')
-
     # loss
     rewardInput = mx.symbol.Variable('rewardInput')
     actionInput = mx.symbol.Variable('actionInput')
-    policy_log = mx.symbol.log(mx.symbol.sum(policy * actionInput, axis=1), name='policy_log')
-    policy_loss = (-policy_log * mx.symbol.sum(rewardInput - value))
+    # avoid NaN with clipping when pi becomes zero
 
-    value_loss = mx.symbol.mean(mx.symbol.square(rewardInput - value))
+    policy_log = mx.symbol.log(mx.symbol.clip(data=policy, a_min=1e-20, a_max=1.0))
+    # add minus, because gradient ascend is used to optimize policy in the
+    # paper, here we use gradient descent
+
+    policy_loss = - mx.symbol.sum(mx.symbol.sum(policy_log * actionInput,
+                                                axis=1) * mx.symbol.sum(rewardInput - value, axis=1))
+    value_loss = mx.symbol.sum(mx.symbol.square(rewardInput - value))
     total_loss = mx.symbol.MakeLoss(policy_loss + (0.5 * value_loss))
+    loss_out = mx.symbol.BlockGrad(policy_loss + (0.5 * value_loss))
 
-    return mx.symbol.Group([policy_out, value_out, total_loss])
+    return mx.symbol.Group([policy_out, value_out, total_loss, loss_out])
 
 def get_dqn_symbol(act_dim, ispredict=False):
     data = mx.symbol.Variable('data')
