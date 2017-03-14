@@ -54,7 +54,7 @@ parser.add_argument('--save-every', type=int, default=1000)
 parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
-parser.add_argument('--game-source', type=str, default='Gym')
+parser.add_argument('--game-source', type=str, default='f')
 
 args = parser.parse_args()
 
@@ -66,7 +66,7 @@ def save_params(save_pre, model, epoch):
 def test_grad(net):
     gradfrom = [[grad.copyto(grad.context) for grad in grads] for grads in
                 net._exec_group.grad_arrays]
-    print 'grad', gradfrom[7][0].asnumpy()
+    print 'grad', np.sum(gradfrom[6][0].asnumpy(), axis=1)
 
 
 def getGame():
@@ -87,15 +87,16 @@ def setup(act_dim):
     #devs = mx.gpu(0)
     devs = mx.cpu()
     loss_net = sym.get_symbol_atari(act_dim)
-    loss_mod = A3CModule(loss_net, data_names=('data', 'rewardInput', 'actionInput'),
+    loss_mod = A3CModule(loss_net, data_names=('data', 'rewardInput', 'actionInput', 'tdInput'),
                          label_names=None, context=devs)
     loss_mod.bind(data_shapes=[('data', (args.batch_size,
                                          args.agent_history_length, args.resized_width, args.resized_height)),
                                ('rewardInput', (args.batch_size,
                                                 1)),
                                ('actionInput', (args.batch_size,
-                                                act_dim))],
-                  label_shapes=None, grad_req='write')
+                                                act_dim)),
+                               ('tdInput', (args.batch_size, 1))],
+                  label_shapes=None, grad_req='add')
 
     model_prefix = args.model_prefix
     save_model_prefix = args.save_model_prefix
@@ -110,13 +111,14 @@ def setup(act_dim):
         arg_params = aux_params = None
 
     initializer = mx.init.Xavier(factor_type='in', magnitude=2.34)
+    #initializer = mx.init.Constant(0.0001)
     if args.load_epoch is not None:
         loss_mod.init_params(arg_params=arg_params, aux_params=aux_params)
     else:
-        loss_mod.init_params(arg_params=arg_params, aux_params=aux_params)
+        loss_mod.init_params(initializer=initializer)
     # optimizer
     loss_mod.init_optimizer(optimizer='adam',
-                            optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 0.001})
+                            optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 10.0})
     return loss_mod
 
 
@@ -140,6 +142,7 @@ def actor_learner_thread(thread_id):
     dataiter = getGame()
     act_dim = dataiter.act_dim
     module = setup(act_dim)
+    '''
     module.bind(data_shapes=[('data', (args.batch_size,
                                        args.agent_history_length, args.resized_width, args.resized_height)),
                              ('rewardInput', (args.batch_size,
@@ -147,6 +150,7 @@ def actor_learner_thread(thread_id):
                              ('actionInput', (args.batch_size,
                                               act_dim))],
                 label_shapes=None, grad_req='add', force_rebind=True)
+    '''
 
     act_dim = dataiter.act_dim
     # Set up per-episode counters
@@ -156,8 +160,8 @@ def actor_learner_thread(thread_id):
     terminal = False
     # anneal e-greedy probability
     final_epsilon = sample_final_epsilon()
-    initial_epsilon = 1
-    epsilon = 1
+    initial_epsilon = 0.1
+    epsilon = 0.1
     t = 0
     while T < TMAX:
         tic = time.time()
@@ -171,25 +175,31 @@ def actor_learner_thread(thread_id):
         r_batch = []
         a_batch = []
         R_batch = []
+        td_batch = []
+        V_batch = []
         terminal_batch = []
         episode_max_p = 0
 
         while not (terminal or ((t - t_start) == args.t_max)):
             null_r = np.zeros((args.batch_size, 1))
             null_a = np.zeros((args.batch_size, act_dim))
+            null_td = np.zeros((args.batch_size, 1))
             batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(null_r),
-                                          mx.nd.array(null_a)], label=None)
+                                          mx.nd.array(null_a), mx.nd.array(null_td)], label=None)
 
             module.forward(batch, is_train=False)
-            policy_out, value_out, total_loss, loss_out = module.get_outputs()
+            policy_out, value_out, total_loss, loss_out , policy_out2= module.get_outputs()
             probs = policy_out.asnumpy()[0]
+            v_t = value_out.asnumpy()
             episode_max_p = max(episode_max_p, max(probs))
-            # print 'prob', probs, 'value',  value_out.asnumpy(), 'loss',
+            #print 'prob', probs, 'pi', policy_out2.asnumpy(), 'value',  value_out.asnumpy()
+            #print mx.nd.SoftmaxActivation(policy_out2).asnumpy()
             # total_loss.asnumpy(), 'loss_out', loss_out.asnumpy()
 
             action_index = action_select(act_dim, probs, epsilon)
             a_t = np.zeros([act_dim])
             a_t[action_index] = 1
+            #print a_t
 
             # scale down eplision
             if epsilon > final_epsilon:
@@ -207,7 +217,9 @@ def actor_learner_thread(thread_id):
             s1_batch.append(s_t1)
             a_batch.append(a_t)
             r_batch.append(r_t)
-            R_batch.append(r_t)
+            V_batch.append(v_t)
+            R_batch.append(0)
+            td_batch.append(0)
             terminal_batch.append(terminal)
             s_t = s_t1
 
@@ -217,22 +229,24 @@ def actor_learner_thread(thread_id):
             batch = mx.io.DataBatch(data=[mx.nd.array([s_t1]), mx.nd.array(
                 null_r), mx.nd.array(null_a)], label=None)
             module.forward(batch, is_train=False)
-            R_t = module.get_outputs()[1].asnumpy()
+            R_t = np.clip(module.get_outputs()[1].asnumpy(), - 2, 2)
 
         module.clear_gradients()
         for i in reversed(range(0, t - t_start)):
             R_t = r_batch[i] + args.gamma * R_t
             R_batch[i] = R_t
-            print 'R_t!', R_t
+            #print 'R_t!', R_t
             # print mx.nd.array([s_batch[i]]), mx.nd.array(R_t),
             # mx.nd.array([a_batch[i]])
+            td_batch[i] = R_t - V_batch[i]
             batch = mx.io.DataBatch(data=[mx.nd.array([s_batch[i]]), mx.nd.array(R_t),
-                                          mx.nd.array([a_batch[i]])], label=None)
+                                          mx.nd.array([a_batch[i]]), mx.nd.array(td_batch[i])], label=None)
             #print 'train! ', 'R_t', R_t, 'a_t', a_batch[i]
             module.forward(batch, is_train=True)
-            print 'loss', module.get_outputs()[2].asnumpy(), 'value', module.get_outputs()[1].asnumpy()
+            #print 'loss', module.get_outputs()[2].asnumpy(), 'value', module.get_outputs()[1].asnumpy()
             module.backward()
             module.clip_gradients(10)
+            #test_grad(module)
 
         #print t, t_start, len(s_batch), len(R_batch), len(a_batch)
         # print mx.nd.array(s_batch), mx.nd.array(np.reshape(R_batch,(-1, 1))),
@@ -299,15 +313,13 @@ def train():
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread,
                                               args=(thread_id,)) for thread_id in range(args.num_threads)]
-    '''
     for t in actor_learner_threads:
         t.start()
 
     for t in actor_learner_threads:
         t.join()
-    '''
 
-    actor_learner_thread(0)
+    #actor_learner_thread(0)
 
 
 if __name__ == '__main__':
