@@ -76,6 +76,8 @@ class GymDataIter(RLDataIter):
         Pops oldest frame, adds current frame to the state buffer.
         Returns current state.
         """
+        if (self.env.spec.id == 'Pong-v0' or self.env.spec.id == 'Breakout-v0'):
+            action_index += 1
 
         x_t1, r_t, terminal, info = self.env.step(action_index)
 

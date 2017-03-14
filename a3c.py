@@ -79,7 +79,7 @@ def getGame():
     return dataiter
 
 
-def setup(act_dim):
+def getNet(act_dim):
     '''
     devs = mx.cpu() if args.gpus is None else [
         mx.gpu(int(i)) for i in args.gpus.split(',')]
@@ -128,6 +128,8 @@ def action_select(act_dim, probs, epsilon):
     else:
         return np.argmax(probs)
 
+def random_choose(act_dim, probs):
+    return np.random.choice(act_dim, p=probs)
 
 def sample_final_epsilon():
     final_espilons_ = np.array([0.1, 0.01, 0.5])
@@ -141,7 +143,7 @@ def actor_learner_thread(thread_id):
 
     dataiter = getGame()
     act_dim = dataiter.act_dim
-    module = setup(act_dim)
+    module = getNet(act_dim)
     '''
     module.bind(data_shapes=[('data', (args.batch_size,
                                        args.agent_history_length, args.resized_width, args.resized_height)),
@@ -229,7 +231,8 @@ def actor_learner_thread(thread_id):
             batch = mx.io.DataBatch(data=[mx.nd.array([s_t1]), mx.nd.array(
                 null_r), mx.nd.array(null_a)], label=None)
             module.forward(batch, is_train=False)
-            R_t = np.clip(module.get_outputs()[1].asnumpy(), - 2, 2)
+            #R_t = np.clip(module.get_outputs()[1].asnumpy(), - 2, 2)
+            R_t = module.get_outputs()[1].asnumpy()
 
         module.clear_gradients()
         for i in reversed(range(0, t - t_start)):
@@ -296,6 +299,37 @@ def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
         logging.info('start with arguments %s', args)
 
 
+def test():
+    if args.game_source == 'Gym':
+        dataiter = rl_data.GymDataIter(
+            args.game, args.resized_width, args.resized_height, args.agent_history_length)
+    else:
+        dataiter = rl_data.MultiThreadFlappyBirdIter(
+            args.resized_width, args.resized_height, args.agent_history_length)
+    act_dim = dataiter.act_dim
+    module = getNet(act_dim)
+    s_t = dataiter.get_initial_state()
+    ep_reward = 0
+    while True:
+        null_r = np.zeros((args.batch_size, 1))
+        null_a = np.zeros((args.batch_size, act_dim))
+        null_td = np.zeros((args.batch_size, 1))
+        batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(null_r),
+                                        mx.nd.array(null_a), mx.nd.array(null_td)], label=None)
+        module.forward(batch, is_train=False)
+        policy_out, value_out, total_loss, loss_out , policy_out2= module.get_outputs()
+        probs = policy_out.asnumpy()[0]
+        action_index = np.argmax(probs)
+        a_t = np.zeros([act_dim])
+        a_t[action_index] = 1
+        s_t1, r_t, terminal, info = dataiter.act(action_index)
+        ep_reward += r_t
+        if terminal:
+            print 'reward', ep_reward
+            ep_reward = 0
+            s_t1 = dataiter.get_initial_state()
+        s_t = s_t1
+
 def train():
 
     kv = mx.kvstore.create(args.kv_store)
@@ -308,7 +342,7 @@ def train():
     epoch = 0
 
     act_dim = 2
-    Net = setup(act_dim)
+    Net = getNet(act_dim)
     lock = threading.Lock()
 
     actor_learner_threads = [threading.Thread(target=actor_learner_thread,
@@ -323,4 +357,7 @@ def train():
 
 
 if __name__ == '__main__':
-    train()
+    if args.test == True:
+        test()
+    else:
+        train()
