@@ -111,6 +111,7 @@ def load_args():
     return arg_params, aux_params
 
 def getNet(act_dim=2, is_train=False):
+    global epoch
     '''
     devs = mx.cpu() if args.gpus is None else [
         mx.gpu(int(i)) for i in args.gpus.split(',')]
@@ -132,6 +133,7 @@ def getNet(act_dim=2, is_train=False):
                  label_shapes=None, grad_req='write')
 
         if args.load_epoch is not None:
+            epoch = args.load_epoch
             mod.init_params(arg_params=arg_params, aux_params=aux_params)
         else: 
             mod.init_params(initializer)
@@ -167,7 +169,7 @@ def sample_final_epsilon():
 
 
 def actor_learner_thread(thread_id):
-    global TMAX, T, Module, Target_module, lock
+    global TMAX, T, Module, Target_module, lock, epoch
 
     if args.game_source == 'Gym':
         dataiter = rl_data.GymDataIter(args.game, args.resized_width,
@@ -193,7 +195,6 @@ def actor_learner_thread(thread_id):
     final_epsilon = sample_final_epsilon()
     initial_epsilon = 0.1
     epsilon = 0.1
-    epoch = 0
     t = 0
 
     # here use replayMemory to fix batch size for training
@@ -218,9 +219,8 @@ def actor_learner_thread(thread_id):
             batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(np.zeros((1, 1))), 
             mx.nd.array(np.zeros((1, act_dim)))],
                                     label=None)
-            with lock:
-                thread_net.forward(batch, is_train=False)
-                q_out = thread_net.get_outputs()[1].asnumpy()
+            thread_net.forward(batch, is_train=False)
+            q_out = thread_net.get_outputs()[1].asnumpy()
 
             # select action using e-greedy
             action_index = action_select(act_dim, q_out, epsilon)
@@ -305,7 +305,6 @@ def actor_learner_thread(thread_id):
             ep_t = 0
             ep_loss = 0
 
-        print epoch
         if args.save_every != 0 and epoch % args.save_every == 0:
             save_params(args.save_model_prefix, Module, epoch)
 
@@ -346,6 +345,7 @@ def test():
     module = getNet(act_dim, is_train=False)
 
     s_t = dataiter.get_initial_state()
+    ep_reward = 0
     while True:
         batch = mx.io.DataBatch(data=[mx.nd.array([s_t])],
                                 label=None)
@@ -355,14 +355,18 @@ def test():
         a_t = np.zeros([act_dim])
         a_t[action_index] = 1
         s_t1, r_t, terminal, info = dataiter.act(action_index)
+        ep_reward += r_t
         if terminal:
+            print 'reward', ep_reward
+            ep_reward = 0
             s_t1 = dataiter.get_initial_state()
         s_t = s_t1
 
 
 def train():
     np.set_printoptions(precision=3, suppress=True)
-    global Module, Target_module, lock
+    global Module, Target_module, lock, epoch
+    epoch = 0
     if args.game_source == 'Gym':
         dataiter = rl_data.GymDataIter(
             args.game, args.resized_width, args.resized_height, args.agent_history_length)
