@@ -9,12 +9,17 @@ import threading
 import gym
 import time
 import random
+from tensorboard import summary
+from tensorboard import FileWriter
 from datetime import datetime
 from collections import deque
 
 T = 0
 TMAX = 80000000
 t_max = 32
+
+logdir = './logs/'
+summary_writer = FileWriter(logdir)
 
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true',
@@ -173,9 +178,9 @@ def setup(isGlobal=False):
 
 def action_select(act_dim, probs, epsilon):
     if(np.random.rand() < epsilon):
-        return [np.random.choice(act_dim)]
+        return np.random.choice(act_dim)
     else:
-        return [np.argmax(probs)]
+        return np.argmax(probs)
 
 
 def sample_final_epsilon():
@@ -325,6 +330,10 @@ def actor_learner_thread(thread_id):
 
             if terminal:
                 print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q / float(ep_t)), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+                s = summary.scalar('score', ep_reward)
+                #summary_writer.add_summary('score', ep_reward)
+                summary_writer.add_summary(s, T)
+                summary_writer.flush()
                 ep_reward = 0
                 episode_ave_max_q = 0
                 break
