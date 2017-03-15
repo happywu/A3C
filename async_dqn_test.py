@@ -100,6 +100,21 @@ def copyTargetQNetwork(fromNetwork, toNetwork):
                           aux_params=aux_params, force_init=True)
 
 
+def load_args():
+    model_prefix = args.model_prefix
+    save_model_prefix = args.save_model_prefix
+    if save_model_prefix is None:
+        save_model_prefix = model_prefix
+
+    if args.load_epoch is not None:
+        assert model_prefix is not None
+        _, arg_params, aux_params = mx.model.load_checkpoint(
+            model_prefix, args.load_epoch)
+    else:
+        arg_params = aux_params = None
+    return arg_params, aux_params
+
+
 def setup(isGlobal=False):
     '''
     devs = mx.cpu() if args.gpus is None else [
@@ -109,12 +124,14 @@ def setup(isGlobal=False):
     #devs = mx.gpu(1)
     devs = mx.cpu()
 
+    arg_params, aux_params = load_args()
+
     if(args.game_source == 'Gym'):
         dataiter = rl_data.GymDataIter(args.game, args.resized_width,
                                        args.resized_height, args.agent_history_length)
     else:
         dataiter = rl_data.MultiThreadFlappyBirdIter(args.resized_width,
-                                          args.resized_height, args.agent_history_length, visual=True)
+                                                     args.resized_height, args.agent_history_length, visual=True)
     act_dim = dataiter.act_dim
 
     mod = mx.mod.Module(sym.get_dqn_symbol(act_dim, ispredict=False), data_names=('data', 'rewardInput', 'actionInput'),
@@ -127,7 +144,10 @@ def setup(isGlobal=False):
 
     initializer = mx.init.Xavier(factor_type='in', magnitude=2.34)
 
-    mod.init_params(initializer)
+    if args.load_epoch is not None:
+        mod.init_params(arg_params=arg_params, aux_params=aux_params)
+    else:
+        mod.init_params(initializer)
     # optimizer
     mod.init_optimizer(optimizer='adam',
                        optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 10.0})
@@ -138,7 +158,10 @@ def setup(isGlobal=False):
     target_mod.bind(data_shapes=[('data', (1, args.agent_history_length,
                                            args.resized_width, args.resized_height)), ],
                     label_shapes=None, grad_req='null')
-    target_mod.init_params(initializer)
+    if args.load_epoch is not None:
+        target_mod.init_params(arg_params=arg_params, aux_params=aux_params)
+    else:
+        target_mod.init_params(initializer)
     # optimizer
     target_mod.init_optimizer(optimizer='adam',
                               optimizer_params={'learning_rate': args.lr, 'wd': args.wd, 'epsilon': 1e-3, 'clip_gradient': 10.0})
@@ -162,14 +185,14 @@ def sample_final_epsilon():
 
 
 def actor_learner_thread(thread_id):
-    global TMAX, T, Module, Target_module, lock
+    global TMAX, T, Module, Target_module, lock, epoch
 
     if args.game_source == 'Gym':
         dataiter = rl_data.GymDataIter(args.game, args.resized_width,
                                        args.resized_height, args.agent_history_length)
     else:
         dataiter = rl_data.MultiThreadFlappyBirdIter(args.resized_width,
-                                          args.resized_height, args.agent_history_length, visual=True)
+                                                     args.resized_height, args.agent_history_length, visual=True)
     act_dim = dataiter.act_dim
 
     # Set up per-episode counters
@@ -184,7 +207,6 @@ def actor_learner_thread(thread_id):
     initial_epsilon = 0.1
     epsilon = 0.1
 
-    epoch = 0
     t = 0
 
     s_batch = []
@@ -220,13 +242,14 @@ def actor_learner_thread(thread_id):
                 # TODO here should be qnet forwarding, not target net. However,
                 #       dealing with variable length input in mxnet is not
                 #       about one simple api. Needs to change to qnet here.
-                batch = mx.io.DataBatch(data=[mx.nd.array([s_t])], 
-                    label=None)
+                batch = mx.io.DataBatch(data=[mx.nd.array([s_t])],
+                                        label=None)
                 with lock:
                     Target_module.forward(batch, is_train=False)
                     q_out = Target_module.get_outputs()[0].asnumpy()
 
                 # select action using e-greedy
+                #print q_out
                 action_index = action_select(act_dim, q_out, epsilon)
                 #print q_out, action_index
 
@@ -263,20 +286,20 @@ def actor_learner_thread(thread_id):
                     Target_module.forward(batch, is_train=False)
                     R_t = np.max(Target_module.get_outputs()[0].asnumpy())
 
-            for i in reversed(range(0, t-t_start)):
+            for i in reversed(range(0, t - t_start)):
                 R_t = r_batch[i] + args.gamma * R_t
                 R_batch[i] = R_t
 
-
             if len(replayMemory) + len(s_batch) > args.replay_memory_length:
-                replayMemory[0:(len(s_batch) + len(replayMemory)) - args.replay_memory_length] = []
-            for i in range(0, t-t_start):
+                replayMemory[0:(len(s_batch) + len(replayMemory)
+                                ) - args.replay_memory_length] = []
+            for i in range(0, t - t_start):
                 replayMemory.append(
-                        (s_batch[i], a_batch[i], r_batch[i], s1_batch[i],
-                            R_batch[i],
-                            terminal_batch[i]))
+                    (s_batch[i], a_batch[i], r_batch[i], s1_batch[i],
+                     R_batch[i],
+                     terminal_batch[i]))
 
-            if len(replayMemory)< args.batch_size:
+            if len(replayMemory) < args.batch_size:
                 continue
             minibatch = random.sample(replayMemory, args.batch_size)
             state_batch = ([data[0] for data in minibatch])
@@ -284,10 +307,12 @@ def actor_learner_thread(thread_id):
             R_batch = ([data[4] for data in minibatch])
 
             # estimated reward according to target network
-            #print mx.nd.array(state_batch), mx.nd.array([R_batch]), mx.nd.array(action_batch)
+            # print mx.nd.array(state_batch), mx.nd.array([R_batch]),
+            # mx.nd.array(action_batch)
             batch = mx.io.DataBatch(data=[mx.nd.array(state_batch),
-                mx.nd.array(np.reshape(R_batch,(-1,1))),
-                mx.nd.array(action_batch)], label=None)
+                                          mx.nd.array(np.reshape(
+                                              R_batch, (-1, 1))),
+                                          mx.nd.array(action_batch)], label=None)
 
             with lock:
                 Module.forward(batch, is_train=True)
@@ -304,6 +329,7 @@ def actor_learner_thread(thread_id):
                 episode_ave_max_q = 0
                 break
 
+        #print epoch
         if args.save_every != 0 and epoch % args.save_every == 0:
             save_params(args.save_model_prefix, Module, epoch)
 
@@ -334,11 +360,35 @@ def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
         logging.info('start with arguments %s', args)
 
 
+def test():
+    _, module, dataiter = setup()
+
+    act_dim = dataiter.act_dim
+    s_t = dataiter.get_initial_state()
+    ep_reward = 0
+    while True:
+        batch = mx.io.DataBatch(data=[mx.nd.array([s_t])],
+                                label=None)
+        module.forward(batch, is_train=False)
+        q_out = module.get_outputs()[0].asnumpy()
+        action_index = np.argmax(q_out)
+        a_t = np.zeros([act_dim])
+        a_t[action_index] = 1
+        s_t1, r_t, terminal, info = dataiter.act(action_index)
+        ep_reward += r_t
+        if terminal:
+            print 'reward', ep_reward
+            ep_reward = 0
+            s_t1 = dataiter.get_initial_state()
+        s_t = s_t1
+
+
 def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
-    global Module, Target_module, lock
+    global Module, Target_module, lock, epoch
+    epoch = 0
     Module, Target_module, _ = setup()
     lock = threading.Lock()
 
@@ -354,4 +404,7 @@ def train():
 
 
 if __name__ == '__main__':
-    train()
+    if args.test == True:
+        test()
+    else:
+        train()
