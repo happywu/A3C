@@ -175,20 +175,14 @@ def actor_learner_thread(thread_id):
         tic = time.time()
         with lock:
             module.copy_from_module(Module)
-        t_start s = summary.scalar('score', ep_reward)
-                #summary_writer.add_summary('score', ep_reward)
-                summary_writer.add_summary(s, T)
-                summary_writer.flush()= t
+        t_start = t
         epoch += 1
         s_batch = []
         s1_batch = []
         r_batch = []
         a_batch = []
         R_batch = []
-        td_batch =s = summary.scalar('score', ep_reward)
-                #summary_writer.add_summary('score', ep_reward)
-                summary_writer.add_summary(s, T)
-                summary_writer.flush() []
+        td_batch = []
         V_batch = []
         terminal_batch = []
 
@@ -204,7 +198,7 @@ def actor_learner_thread(thread_id):
             probs = policy_out.asnumpy()[0]
             v_t = value_out.asnumpy()
             episode_max_p = max(episode_max_p, max(probs))
-            print 'prob', probs, 'pi', policy_out2.asnumpy(), 'value',  value_out.asnumpy()
+            #print 'prob', probs, 'pi', policy_out2.asnumpy(), 'value',  value_out.asnumpy()
             #print mx.nd.SoftmaxActivation(policy_out2).asnumpy()
             # total_loss.asnumpy(), 'loss_out', loss_out.asnumpy()
 
@@ -219,8 +213,8 @@ def actor_learner_thread(thread_id):
                     args.anneal_epsilon_timesteps
 
             s_t1, r_t, terminal, info = dataiter.act(action_index)
-            with lock:
-                dataiter.env.render()
+            #with lock:
+            #    dataiter.env.render()
             r_t = np.clip(r_t, -1, 1)
             t += 1
             T += 1
@@ -281,7 +275,7 @@ def actor_learner_thread(thread_id):
             Module.update()
 
         if terminal:
-            print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ P_MAX %.4f" % episode_max_p, "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+            print "THREAD:", thread_id, "/ Epoch", epoch, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ P_MAX %.4f" % episode_max_p, "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
             s = summary.scalar('score', ep_reward)
             summary_writer.add_summary(s, T)
             summary_writer.flush()
