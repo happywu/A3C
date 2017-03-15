@@ -8,6 +8,8 @@ import os
 import threading
 import gym
 import random
+from tensorboard import summary
+from tensorboard import FileWriter
 from datetime import datetime
 import time
 from a3cmodule import A3CModule
@@ -15,6 +17,9 @@ from a3cmodule import A3CModule
 T = 0
 TMAX = 80000000
 t_max = 32
+
+logdir = './logs/'
+summary_writer = FileWriter(logdir)
 
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true',
@@ -51,11 +56,11 @@ parser.add_argument('--game', type=str, default='Breakout-v0')
 parser.add_argument('--num-threads', type=int, default=3)
 parser.add_argument('--epsilon', type=float, default=1)
 parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
-parser.add_argument('--save-every', type=int, default=1000)
+parser.add_argument('--save-every', type=int, default=500)
 parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
-parser.add_argument('--game-source', type=str, default='f')
+parser.add_argument('--game-source', type=str, default='Gym')
 parser.add_argument('--replay-memory-length', type=int, default=32)
 args = parser.parse_args()
 
@@ -170,14 +175,20 @@ def actor_learner_thread(thread_id):
         tic = time.time()
         with lock:
             module.copy_from_module(Module)
-        t_start = t
+        t_start s = summary.scalar('score', ep_reward)
+                #summary_writer.add_summary('score', ep_reward)
+                summary_writer.add_summary(s, T)
+                summary_writer.flush()= t
         epoch += 1
         s_batch = []
         s1_batch = []
         r_batch = []
         a_batch = []
         R_batch = []
-        td_batch = []
+        td_batch =s = summary.scalar('score', ep_reward)
+                #summary_writer.add_summary('score', ep_reward)
+                summary_writer.add_summary(s, T)
+                summary_writer.flush() []
         V_batch = []
         terminal_batch = []
 
@@ -193,7 +204,7 @@ def actor_learner_thread(thread_id):
             probs = policy_out.asnumpy()[0]
             v_t = value_out.asnumpy()
             episode_max_p = max(episode_max_p, max(probs))
-            #print 'prob', probs, 'pi', policy_out2.asnumpy(), 'value',  value_out.asnumpy()
+            print 'prob', probs, 'pi', policy_out2.asnumpy(), 'value',  value_out.asnumpy()
             #print mx.nd.SoftmaxActivation(policy_out2).asnumpy()
             # total_loss.asnumpy(), 'loss_out', loss_out.asnumpy()
 
@@ -208,6 +219,8 @@ def actor_learner_thread(thread_id):
                     args.anneal_epsilon_timesteps
 
             s_t1, r_t, terminal, info = dataiter.act(action_index)
+            with lock:
+                dataiter.env.render()
             r_t = np.clip(r_t, -1, 1)
             t += 1
             T += 1
@@ -269,6 +282,9 @@ def actor_learner_thread(thread_id):
 
         if terminal:
             print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ P_MAX %.4f" % episode_max_p, "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+            s = summary.scalar('score', ep_reward)
+            summary_writer.add_summary(s, T)
+            summary_writer.flush()
             ep_reward = 0
             episode_max_p = 0
             terminal = False
