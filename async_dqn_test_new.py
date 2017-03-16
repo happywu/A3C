@@ -184,143 +184,120 @@ def actor_learner_thread(thread_id):
         epoch += 1
         terminal = False
         s_t = dataiter.get_initial_state()
-        terminal = False
-        t_start = t
-        s_batch = []
-        s1_batch = []
-        a_batch = []
-        r_batch = []
-        R_batch = []
-        terminal_batch = []
-        while not (terminal or ((t - t_start) == args.t_max)):
-            batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(np.zeros((1, 1))),
-                                          mx.nd.array(np.zeros((1, act_dim)))],
-                                    label=None)
-            thread_net.forward(batch, is_train=False)
-            q_out = thread_net.get_outputs()[1].asnumpy()
+        ep_reward = 0
+        ep_t = 0 
 
-            # select action using e-greedy
-            action_index = action_select(act_dim, q_out, epsilon)
-            #print q_out, action_index
+        while True:
+            t_start = t
+            s_batch = []
+            s1_batch = []
+            a_batch = []
+            r_batch = []
+            R_batch = []
+            terminal_batch = []
+            while not (terminal or ((t - t_start) == args.t_max)):
+                batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(np.zeros((1, 1))),
+                                            mx.nd.array(np.zeros((1, act_dim)))],
+                                        label=None)
+                thread_net.forward(batch, is_train=False)
+                q_out = thread_net.get_outputs()[1].asnumpy()
 
-            a_t = np.zeros([act_dim])
-            a_t[action_index] = 1
+                # select action using e-greedy
+                action_index = action_select(act_dim, q_out, epsilon)
+                #print q_out, action_index
 
-            # scale down eplision
-            if epsilon > final_epsilon:
-                epsilon -= (initial_epsilon - final_epsilon) / \
-                    args.anneal_epsilon_timesteps
+                a_t = np.zeros([act_dim])
+                a_t[action_index] = 1
 
-            # play one step game
-            s_t1, r_t, terminal, info = dataiter.act(action_index)
-            r_t = np.clip(r_t, -1, 1)
-            t += 1
-            T += 1
-            ep_t += 1
-            ep_reward += r_t
-            episode_ave_max_q += np.max(q_out)
+                # scale down eplision
+                if epsilon > final_epsilon:
+                    epsilon -= (initial_epsilon - final_epsilon) / \
+                        args.anneal_epsilon_timesteps
 
-            s_batch.append(s_t)
-            s1_batch.append(s_t1)
-            a_batch.append(a_t)
-            r_batch.append(r_t)
-            R_batch.append(r_t)
-            terminal_batch.append(terminal)
-            s_t = s_t1
+                # play one step game
+                s_t1, r_t, terminal, info = dataiter.act(action_index)
+                r_t = np.clip(r_t, -1, 1)
+                t += 1
+                with lock:
+                    T += 1
+                ep_t += 1
+                ep_reward += r_t
+                episode_ave_max_q += np.max(q_out)
 
-        if terminal:
-            R_t = 0
-        else:
-            batch = mx.io.DataBatch(data=[mx.nd.array([s_t1])], label=None)
+                s_batch.append(s_t)
+                s1_batch.append(s_t1)
+                a_batch.append(a_t)
+                r_batch.append(r_t)
+                R_batch.append(r_t)
+                terminal_batch.append(terminal)
+                s_t = s_t1
+
+            if terminal:
+                R_t = 0
+            else:
+                batch = mx.io.DataBatch(data=[mx.nd.array([s_t1])], label=None)
+                with lock:
+                    Target_module.forward(batch, is_train=False)
+                    R_t = np.max(Target_module.get_outputs()[0].asnumpy())
+
+            for i in reversed(range(0, t - t_start)):
+                R_t = r_batch[i] + args.gamma * R_t
+                R_batch[i] = R_t
+
+            if len(replayMemory) + len(s_batch) > args.replay_memory_length:
+                replayMemory[0:(len(s_batch) + len(replayMemory)) -
+                            args.replay_memory_length] = []
+            for i in range(0, t - t_start):
+                replayMemory.append(
+                    (s_batch[i], a_batch[i], r_batch[i], s1_batch[i],
+                    R_batch[i],
+                    terminal_batch[i]))
+
+            if len(replayMemory) < args.batch_size:
+                continue
+            minibatch = random.sample(replayMemory, args.batch_size)
+            state_batch = ([data[0] for data in minibatch])
+            action_batch = ([data[1] for data in minibatch])
+            R_batch = ([data[4] for data in minibatch])
+
+            thread_net.clear_gradients()
+            # TODO here can only forward one at each time because mxnet need rebind
+            # for variable input length
+            for i in range(args.batch_size):
+                batch = mx.io.DataBatch(data=[mx.nd.array([state_batch[i]]),
+                                            mx.nd.array(np.reshape(
+                                                R_batch[i], (-1, 1))),
+                                            mx.nd.array([action_batch[i]])], label=None)
+
+                thread_net.forward(batch, is_train=True)
+                thread_net.backward()
+
             with lock:
-                Target_module.forward(batch, is_train=False)
-                R_t = np.max(Target_module.get_outputs()[0].asnumpy())
+                Module.add_gradients_from_module(thread_net)
+                Module.update()
+                Module.clear_gradients()
 
-        for i in reversed(range(0, t - t_start)):
-            R_t = r_batch[i] + args.gamma * R_t
-            R_batch[i] = R_t
+            thread_net.update()
+            thread_net.clear_gradients()
 
-        if len(replayMemory) + len(s_batch) > args.replay_memory_length:
-            replayMemory[0:(len(s_batch) + len(replayMemory)) -
-                         args.replay_memory_length] = []
-        for i in range(0, t - t_start):
-            replayMemory.append(
-                (s_batch[i], a_batch[i], r_batch[i], s1_batch[i],
-                 R_batch[i],
-                 terminal_batch[i]))
+            if t % args.network_update_frequency == 0 or terminal:
+                with lock:
+                    Target_module.copy_from_module(Module)
 
-        if len(replayMemory) < args.batch_size:
-            continue
-        minibatch = random.sample(replayMemory, args.batch_size)
-        state_batch = ([data[0] for data in minibatch])
-        action_batch = ([data[1] for data in minibatch])
-        R_batch = ([data[4] for data in minibatch])
-
-        thread_net.clear_gradients()
-        # TODO here can only forward one at each time because mxnet need rebind
-        # for variable input length
-        for i in range(args.batch_size):
-            batch = mx.io.DataBatch(data=[mx.nd.array([state_batch[i]]),
-                                          mx.nd.array(np.reshape(
-                                              R_batch[i], (-1, 1))),
-                                          mx.nd.array([action_batch[i]])], label=None)
-
-            thread_net.forward(batch, is_train=True)
-            thread_net.backward()
-
-        with lock:
-            Module.add_gradients_from_module(thread_net)
-            Module.update()
-            Module.clear_gradients()
-
-        thread_net.update()
-        thread_net.clear_gradients()
-
-        if t % args.network_update_frequency == 0 or terminal:
-            with lock:
-                Target_module.copy_from_module(Module)
-
-        if terminal:
-            print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q / float(ep_t)), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
-            elapsed_time = time.time() - start_time
-            steps_per_sec = T / elapsed_time
-            print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
-                T,  elapsed_time, steps_per_sec, steps_per_sec * 3600 / 1000000.))
-            ep_reward = 0
-            episode_ave_max_q = 0
-            ep_reward = 0
-            ep_t = 0
-            ep_loss = 0
+            if terminal:
+                print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q / float(ep_t)), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+                elapsed_time = time.time() - start_time
+                steps_per_sec = T / elapsed_time
+                print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
+                    T,  elapsed_time, steps_per_sec, steps_per_sec * 3600 / 1000000.))
+                ep_reward = 0
+                episode_ave_max_q = 0
+                ep_reward = 0
+                ep_t = 0
+                ep_loss = 0
 
         if args.save_every != 0 and epoch % args.save_every == 0:
             save_params(args.save_model_prefix, Module, epoch)
-
-
-def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
-    reload(logging)
-    head = '%(asctime)-15s Node[' + str(rank) + '] %(message)s'
-    if log_dir:
-        logging.basicConfig(level=logging.DEBUG, format=head)
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        if not log_file:
-            log_file = (prefix if prefix else '') + \
-                datetime.now().strftime('_%Y_%m_%d-%H_%M.log')
-            #r_t = np.clip(r_t, -1, 1)
-            #r_t = np.clip(r_t, -1, 1)
-            log_file = log_file.replace('/', '-')
-        else:
-            log_file = log_file
-        log_file_full_name = os.path.join(log_dir, log_file)
-        handler = logging.FileHandler(log_file_full_name, mode='w')
-        formatter = logging.Formatter(head)
-        handler.setFormatter(formatter)
-        logging.getLogger().addHandler(handler)
-        logging.info('start with arguments %s', args)
-    else:
-        logging.basicConfig(level=logging.DEBUG, format=head)
-        logging.info('start with arguments %s', args)
-
 
 def test():
     if args.game_source == 'Gym':
