@@ -37,7 +37,7 @@ parser.add_argument('--num-epochs', type=int, default=120,
                     help='the number of training epochs')
 parser.add_argument('--num-examples', type=int, default=1000000,
                     help='the number of training examples')
-parser.add_argument('--batch-size', type=int, default=1)
+parser.add_argument('--batch-size', type=int, default=16)
 parser.add_argument('--input-length', type=int, default=4)
 
 parser.add_argument('--lr', type=float, default=0.0001)
@@ -110,7 +110,7 @@ def getNet(act_dim):
     else:
         arg_params = aux_params = None
 
-    initializer = mx.init.Xavier(factor_type='in', magnitude=2.34)
+    initializer = mx.init.Xavier(rnd_type='uniform', factor_type='in', magnitude=1)
     #initializer = mx.init.Constant(0.0001)
     if args.load_epoch is not None:
         loss_mod.init_params(arg_params=arg_params, aux_params=aux_params)
@@ -144,16 +144,11 @@ def actor_learner_thread(thread_id):
     dataiter = getGame()
     act_dim = dataiter.act_dim
     module = getNet(act_dim)
-    '''
-    module.bind(data_shapes=[('data', (args.batch_size,
-                                       args.agent_history_length, args.resized_width, args.resized_height)),
-                             ('rewardInput', (args.batch_size,
-                                              1)),
-                             ('actionInput', (args.batch_size,
-                                              act_dim))],
+    module.bind(data_shapes=[('data', (1, args.agent_history_length, args.resized_width, args.resized_height)),
+                             ('rewardInput', (1, 1)),
+                             ('actionInput', (1, act_dim)),
+                             ('tdInput', (1, 1))],
                 label_shapes=None, grad_req='add', force_rebind=True)
-    '''
-
     act_dim = dataiter.act_dim
     # Set up per-episode counters
     ep_reward = 0
@@ -165,10 +160,12 @@ def actor_learner_thread(thread_id):
     initial_epsilon = 0.1
     epsilon = 0.1
     t = 0
+    replayMemory =  []
+    episode_max_p = 0
     while T < TMAX:
         tic = time.time()
         with lock:
-            module.copy_from_module(Net)
+            module.copy_from_module(Module)
         module.clear_gradients()
         t_start = t
         epoch += 1
@@ -180,7 +177,6 @@ def actor_learner_thread(thread_id):
         td_batch = []
         V_batch = []
         terminal_batch = []
-        episode_max_p = 0
 
         while not (terminal or ((t - t_start) == args.t_max)):
             null_r = np.zeros((args.batch_size, 1))
@@ -247,58 +243,35 @@ def actor_learner_thread(thread_id):
             #print 'train! ', 'R_t', R_t, 'a_t', a_batch[i]
             module.forward(batch, is_train=True)
             #print 'loss', module.get_outputs()[2].asnumpy(), 'value', module.get_outputs()[1].asnumpy()
+            #print 'adv', td_batch[i], 'R_t', R_t, 'V_t', V_batch[i], 'a_t', a_batch[i] 
             module.backward()
-            module.clip_gradients(10)
+            #module.clip_gradients(10)
             #test_grad(module)
 
         #print t, t_start, len(s_batch), len(R_batch), len(a_batch)
         # print mx.nd.array(s_batch), mx.nd.array(np.reshape(R_batch,(-1, 1))),
         # mx.nd.array(a_batch)
         with lock:
-            Net.add_gradients_from_module(module)
-            Net.clip_gradients(10)
-            Net.update()
-            Net.clear_gradients()
+            Module.add_gradients_from_module(module)
+            #Module.clip_gradients(10)
+            #Module.update()
+            #Module.clear_gradients()
 
-        module.update()
         module.clear_gradients()
 
         if terminal:
             print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ P_MAX %.4f" % episode_max_p, "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+            elapsed_time = time.time() - start_time
+            steps_per_sec = T / elapsed_time
+            print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
+                T,  elapsed_time, steps_per_sec, steps_per_sec * 3600 / 1000000.))
             ep_reward = 0
             episode_max_p = 0
             terminal = False
             s_t = dataiter.get_initial_state()
 
         if args.save_every != 0 and epoch % args.save_every == 0:
-            save_params(args.save_model_prefix, Net, epoch)
-
-
-def log_config(log_dir=None, log_file=None, prefix=None, rank=0):
-    reload(logging)
-    head = '%(asctime)-15s Node[' + str(rank) + '] %(message)s'
-    if log_dir:
-        logging.basicConfig(level=logging.DEBUG, format=head)
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        if not log_file:
-            log_file = (prefix if prefix else '') + \
-                datetime.now().strftime('_%Y_%m_%d-%H_%M.log')
-            #r_t = np.clip(r_t, -1, 1)
-            #r_t = np.clip(r_t, -1, 1)
-            log_file = log_file.replace('/', '-')
-        else:
-            log_file = log_file
-        log_file_full_name = os.path.join(log_dir, log_file)
-        handler = logging.FileHandler(log_file_full_name, mode='w')
-        formatter = logging.Formatter(head)
-        handler.setFormatter(formatter)
-        logging.getLogger().addHandler(handler)
-        logging.info('start with arguments %s', args)
-    else:
-        logging.basicConfig(level=logging.DEBUG, format=head)
-        logging.info('start with arguments %s', args)
-
+            save_params(args.save_model_prefix, Module, epoch)
 
 def test():
     if args.game_source == 'Gym':
@@ -338,25 +311,29 @@ def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
-    global Net, lock, epoch
+    global Module, lock, epoch, start_time
     if args.game_source == 'Gym':
         dataiter = getGame()
         act_dim = dataiter.act_dim
     else:
         act_dim = 2
     epoch = 0
-    Net = getNet(act_dim)
+    Module = getNet(act_dim)
     lock = threading.Lock()
 
+    start_time = time.time()
     actor_learner_threads = [threading.Thread(target=actor_learner_thread,
                                               args=(thread_id,)) for thread_id in range(args.num_threads)]
-    for t in actor_learner_threads:
-        t.start()
+    if args.num_threads > 1:
 
-    for t in actor_learner_threads:
-        t.join()
+        for t in actor_learner_threads:
+            t.start()
 
-    #actor_learner_thread(0)
+        for t in actor_learner_threads:
+            t.join()
+
+    else:
+        actor_learner_thread(0)
 
 
 if __name__ == '__main__':

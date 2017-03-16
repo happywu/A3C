@@ -172,8 +172,7 @@ def actor_learner_thread(thread_id):
                     label_shapes=None, grad_req='add', force_rebind=True)
     # Set up per-episode counters
     ep_reward = 0
-    ep_t = 0
-    episode_ave_max_q = 0
+    episode_max_q = 0
     final_epsilon = sample_final_epsilon()
     initial_epsilon = 0.1
     epsilon = 0.1
@@ -183,14 +182,10 @@ def actor_learner_thread(thread_id):
     replayMemory = []
 
     while T < TMAX:
-        with lock:
-            thread_net.copy_from_module(Module)
-        thread_net.clear_gradients()
         epoch += 1
         terminal = False
         s_t = dataiter.get_initial_state()
         ep_reward = 0
-        ep_t = 0 
 
         while True:
             t_start = t
@@ -200,6 +195,9 @@ def actor_learner_thread(thread_id):
             r_batch = []
             R_batch = []
             terminal_batch = []
+            with lock:
+                thread_net.copy_from_module(Module)
+            thread_net.clear_gradients()
             while not (terminal or ((t - t_start) == args.t_max)):
                 batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(np.zeros((1, 1))),
                                             mx.nd.array(np.zeros((1, act_dim)))],
@@ -227,8 +225,7 @@ def actor_learner_thread(thread_id):
                     T += 1
                 ep_t += 1
                 ep_reward += r_t
-                episode_ave_max_q += np.max(q_out)
-
+                episode_max_q = max(episode_max_q, np.max(q_out))
                 s_batch.append(s_t)
                 s1_batch.append(s_t1)
                 a_batch.append(a_t)
@@ -290,7 +287,7 @@ def actor_learner_thread(thread_id):
                     Target_module.copy_from_module(Module)
 
             if terminal:
-                print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q / float(ep_t)), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+                print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % episode_max_q, "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
                 s = summary.scalar('score', ep_reward)
                 summary_writer.add_summary(s, T)
                 summary_writer.flush()
@@ -299,10 +296,9 @@ def actor_learner_thread(thread_id):
                 print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
                     T,  elapsed_time, steps_per_sec, steps_per_sec * 3600 / 1000000.))
                 ep_reward = 0
-                episode_ave_max_q = 0
+                episode_max_q = 0
                 ep_reward = 0
-                ep_t = 0
-                ep_loss = 0
+                break
 
         if args.save_every != 0 and epoch % args.save_every == 0:
             save_params(args.save_model_prefix, Module, epoch)

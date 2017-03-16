@@ -204,8 +204,6 @@ def actor_learner_thread(thread_id):
     ep_reward = 0
     ep_t = 0
 
-    probs_summary_t = 0
-
     score = np.zeros((args.batch_size, 1))
 
     final_epsilon = sample_final_epsilon()
@@ -230,7 +228,7 @@ def actor_learner_thread(thread_id):
         terminal = False
         s_t = dataiter.get_initial_state()
         ep_reward = 0
-        episode_ave_max_q = 0
+        episode_max_q = 0
         ep_t = 0
         ep_loss = 0
         # perform an episode
@@ -334,6 +332,10 @@ def actor_learner_thread(thread_id):
                 #summary_writer.add_summary('score', ep_reward)
                 summary_writer.add_summary(s, T)
                 summary_writer.flush()
+                elapsed_time = time.time() - start_time
+                steps_per_sec = T / elapsed_time
+                print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
+                    T,  elapsed_time, steps_per_sec, steps_per_sec * 3600 / 1000000.))
                 ep_reward = 0
                 episode_ave_max_q = 0
                 break
@@ -396,11 +398,12 @@ def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
-    global Module, Target_module, lock, epoch
+    global Module, Target_module, lock, epoch, start_time
     epoch = 0
     Module, Target_module, _ = setup()
     lock = threading.Lock()
 
+    start_time = time.time()
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(
         thread_id,)) for thread_id in range(args.num_threads)]
     for t in actor_learner_threads:
