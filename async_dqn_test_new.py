@@ -137,9 +137,9 @@ def getNet(act_dim=2, is_train=False):
 
 def action_select(act_dim, probs, epsilon):
     if(np.random.rand() < epsilon):
-        return [np.random.choice(act_dim)]
+        return np.random.choice(act_dim)
     else:
-        return [np.argmax(probs)]
+        return np.argmax(probs)
 
 
 def sample_final_epsilon():
@@ -149,7 +149,7 @@ def sample_final_epsilon():
 
 
 def actor_learner_thread(thread_id):
-    global TMAX, T, Module, Target_module, lock, epoch
+    global TMAX, T, Module, Target_module, lock, epoch, start_time
 
     if args.game_source == 'Gym':
         dataiter = rl_data.GymDataIter(args.game, args.resized_width,
@@ -282,6 +282,10 @@ def actor_learner_thread(thread_id):
 
         if terminal:
             print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q / float(ep_t)), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+            elapsed_time = time.time() - start_time
+            steps_per_sec = T / elapsed_time
+            print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
+                T,  elapsed_time, steps_per_sec, steps_per_sec * 3600 / 1000000.))
             ep_reward = 0
             episode_ave_max_q = 0
             ep_reward = 0
@@ -351,7 +355,7 @@ def train():
     sed = np.random.randint(1000)
     np.random.seed(sed)
     np.set_printoptions(precision=3, suppress=True)
-    global Module, Target_module, lock, epoch
+    global Module, Target_module, lock, epoch, start_time
     epoch = 0
     if args.game_source == 'Gym':
         dataiter = rl_data.GymDataIter(
@@ -365,6 +369,7 @@ def train():
     Target_module = getNet(act_dim, is_train=False)
     lock = threading.Lock()
 
+    start_time = time.time()
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(
         thread_id,)) for thread_id in range(args.num_threads)]
     for t in actor_learner_threads:
