@@ -53,7 +53,7 @@ parser.add_argument('--gamma', type=float, default=0.99)
 parser.add_argument('--beta', type=float, default=0.08)
 
 parser.add_argument('--game', type=str, default='Breakout-v0')
-parser.add_argument('--num-threads', type=int, default=3)
+parser.add_argument('--num-threads', type=int, default=4)
 parser.add_argument('--epsilon', type=float, default=1)
 parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=500)
@@ -102,7 +102,7 @@ def getNet(act_dim):
                                ('actionInput', (args.batch_size,
                                                 act_dim)),
                                ('tdInput', (args.batch_size, 1))],
-                  label_shapes=None, grad_req='add')
+                  label_shapes=None, grad_req='write')
 
     model_prefix = args.model_prefix
     save_model_prefix = args.save_model_prefix
@@ -118,7 +118,7 @@ def getNet(act_dim):
 
     #initializer = mx.init.Xavier(rnd_type='uniform', factor_type='in', magnitude=1)
     initializer = mx.init.Mixed(['fc_value_weight|fc_policy_weight', '.*'],
-                         [mx.init.Uniform(0.001), mx.init.Xavier(rnd_type='uniform', factor_type="in", magnitude=2)])
+                         [mx.init.Uniform(0.001), mx.init.Xavier(rnd_type='uniform', factor_type="in", magnitude=1)])
     #initializer = mx.init.Constant(0.0001)
     if args.load_epoch is not None:
         loss_mod.init_params(arg_params=arg_params, aux_params=aux_params)
@@ -247,6 +247,7 @@ def actor_learner_thread(thread_id):
             # print mx.nd.array([s_batch[i]]), mx.nd.array(R_t),
             # mx.nd.array([a_batch[i]])
             td_batch[i] = R_t - V_batch[i]
+            #print 'adv', td_batch[i], 'R_t', R_t, 'V_t', V_batch[i], 'a_t', a_batch[i] 
 
         if len(replayMemory) + len(s_batch) > args.replay_memory_length:
             replayMemory[0:(len(s_batch) + len(replayMemory)
@@ -270,7 +271,9 @@ def actor_learner_thread(thread_id):
                                 
         #print mx.nd.array(s_batch), mx.nd.array(np.array(R_batch).reshape(-1,1)), mx.nd.array(a_batch), mx.nd.array(td_batch)
         with lock:
+            Module.clear_gradients()
             Module.forward(batch, is_train=True)
+            #print 'loss', np.mean(Module.get_outputs()[2].asnumpy())
             Module.backward()
             Module.update()
 
@@ -279,6 +282,10 @@ def actor_learner_thread(thread_id):
             s = summary.scalar('score', ep_reward)
             summary_writer.add_summary(s, T)
             summary_writer.flush()
+            elapsed_time = time.time() - start_time
+            steps_per_sec = T / elapsed_time
+            print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
+                T,  elapsed_time, steps_per_sec, steps_per_sec * 3600 / 1000000.))
             ep_reward = 0
             episode_max_p = 0
             terminal = False
@@ -332,7 +339,7 @@ def train():
     # logging
     np.set_printoptions(precision=3, suppress=True)
 
-    global Module, lock, epoch
+    global Module, lock, epoch, start_time
     if args.game_source == 'Gym':
         dataiter = getGame()
         act_dim = dataiter.act_dim
@@ -342,15 +349,17 @@ def train():
     Module = getNet(act_dim)
     lock = threading.Lock()
 
+    start_time = time.time()
     actor_learner_threads = [threading.Thread(target=actor_learner_thread,
                                               args=(thread_id,)) for thread_id in range(args.num_threads)]
-    for t in actor_learner_threads:
-        t.start()
+    if args.num_threads > 1:
+        for t in actor_learner_threads:
+            t.start()
 
-    for t in actor_learner_threads:
-        t.join()
-
-    #actor_learner_thread(0)
+        for t in actor_learner_threads:
+            t.join()
+    else:
+        actor_learner_thread(0)
 
 
 if __name__ == '__main__':
