@@ -2,6 +2,7 @@ import mxnet as mx
 import numpy as np
 import sym
 import argparse
+import random
 import rl_data
 import logging
 import os
@@ -42,7 +43,7 @@ parser.add_argument('--num-epochs', type=int, default=120,
                     help='the number of training epochs')
 parser.add_argument('--num-examples', type=int, default=1000000,
                     help='the number of training examples')
-parser.add_argument('--batch-size', type=int, default=16)
+parser.add_argument('--batch-size', type=int, default=4)
 parser.add_argument('--input-length', type=int, default=4)
 
 parser.add_argument('--lr', type=float, default=0.0001)
@@ -60,6 +61,7 @@ parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
 parser.add_argument('--game-source', type=str, default='Gym')
+parser.add_argument('--replay-memory-length', type=int, default=8)
 
 args = parser.parse_args()
 
@@ -101,7 +103,7 @@ def getNet(act_dim):
                                ('actionInput', (args.batch_size,
                                                 act_dim)),
                                ('tdInput', (args.batch_size, 1))],
-                  label_shapes=None, grad_req='add')
+                  label_shapes=None, grad_req='write')
 
     model_prefix = args.model_prefix
     save_model_prefix = args.save_model_prefix
@@ -146,14 +148,17 @@ def actor_learner_thread(thread_id):
     global TMAX, T, lock, epoch
     #kv = mx.kvstore.create(args.kv_store)
 
+    devs = mx.gpu(1)
+
     dataiter = getGame()
     act_dim = dataiter.act_dim
     module = getNet(act_dim)
-    module.bind(data_shapes=[('data', (1, args.agent_history_length, args.resized_width, args.resized_height)),
-                             ('rewardInput', (1, 1)),
-                             ('actionInput', (1, act_dim)),
-                             ('tdInput', (1, 1))],
-                label_shapes=None, grad_req='add', force_rebind=True)
+    forward_net = sym.get_symbol_forward(act_dim)
+    forward_module = A3CModule(forward_net, data_names=('data',),
+                                   label_names=None, context=devs)
+    forward_module.bind(data_shapes=[('data', (1, args.agent_history_length, args.resized_width, args.resized_height)), ],
+                        label_shapes=None, for_training=False, grad_req='null')
+
     act_dim = dataiter.act_dim
     # Set up per-episode counters
     ep_reward = 0
@@ -171,7 +176,7 @@ def actor_learner_thread(thread_id):
         tic = time.time()
         with lock:
             module.copy_from_module(Module)
-        module.clear_gradients()
+        forward_module.copy_from_module(module)
         t_start = t
         epoch += 1
         s_batch = []
@@ -184,14 +189,9 @@ def actor_learner_thread(thread_id):
         terminal_batch = []
 
         while not (terminal or ((t - t_start) == args.t_max)):
-            null_r = np.zeros((args.batch_size, 1))
-            null_a = np.zeros((args.batch_size, act_dim))
-            null_td = np.zeros((args.batch_size, 1))
-            batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(null_r),
-                                          mx.nd.array(null_a), mx.nd.array(null_td)], label=None)
-
-            module.forward(batch, is_train=False)
-            policy_out, value_out, total_loss, loss_out , policy_out2= module.get_outputs()
+            batch = mx.io.DataBatch(data=[mx.nd.array([s_t])], label=None)
+            forward_module.forward(batch, is_train=False)
+            policy_out, value_out = forward_module.get_outputs()
             probs = policy_out.asnumpy()[0]
             v_t = value_out.asnumpy()
             episode_max_p = max(episode_max_p, max(probs))
@@ -228,13 +228,12 @@ def actor_learner_thread(thread_id):
         if terminal:
             R_t = np.zeros((1, 1))
         else:
-            batch = mx.io.DataBatch(data=[mx.nd.array([s_t1]), mx.nd.array(
-                null_r), mx.nd.array(null_a)], label=None)
-            module.forward(batch, is_train=False)
+            batch = mx.io.DataBatch(data=[mx.nd.array([s_t1])], label=None)
+            forward_module.forward(batch, is_train=False)
             #R_t = np.clip(module.get_outputs()[1].asnumpy(), - 2, 2)
-            R_t = module.get_outputs()[1].asnumpy()
+            R_t = forward_module.get_outputs()[1].asnumpy()
 
-        module.clear_gradients()
+
         for i in reversed(range(0, t - t_start)):
             R_t = r_batch[i] + args.gamma * R_t
             R_batch[i] = R_t
@@ -242,26 +241,38 @@ def actor_learner_thread(thread_id):
             # print mx.nd.array([s_batch[i]]), mx.nd.array(R_t),
             # mx.nd.array([a_batch[i]])
             td_batch[i] = R_t - V_batch[i]
-            batch = mx.io.DataBatch(data=[mx.nd.array([s_batch[i]]), mx.nd.array(R_t),
-                                          mx.nd.array([a_batch[i]]), mx.nd.array(td_batch[i])], label=None)
-            #print 'train! ', 'R_t', R_t, 'a_t', a_batch[i]
-            module.forward(batch, is_train=True)
-            #print 'loss', module.get_outputs()[2].asnumpy(), 'value', module.get_outputs()[1].asnumpy()
-            #print 'adv', td_batch[i], 'R_t', R_t, 'V_t', V_batch[i], 'a_t', a_batch[i] 
-            module.backward()
-            #module.clip_gradients(10)
-            #test_grad(module)
 
+        if len(replayMemory) + len(s_batch) > args.replay_memory_length:
+            replayMemory[0:(len(s_batch) + len(replayMemory)
+                            ) - args.replay_memory_length] = []
+        for i in range(0, t - t_start):
+            replayMemory.append(
+                (s_batch[i], a_batch[i], r_batch[i], s1_batch[i],
+                R_batch[i], td_batch[i],
+                terminal_batch[i]))
+
+        if len(replayMemory) < args.batch_size:
+            continue
+        minibatch = random.sample(replayMemory, args.batch_size)
+        s_minibatch = ([data[0] for data in minibatch])
+        a_minibatch = ([data[1] for data in minibatch])
+        R_minibatch = ([data[4] for data in minibatch])
+        td_minibatch = ([data[5] for data in minibatch]) 
+
+        batch = mx.io.DataBatch(data=[mx.nd.array(s_minibatch), mx.nd.array(np.array(R_minibatch).reshape(-1,1)),
+                                    mx.nd.array(a_minibatch), mx.nd.array(np.array(td_minibatch).reshape(-1, 1))], label=None)
         #print t, t_start, len(s_batch), len(R_batch), len(a_batch)
         # print mx.nd.array(s_batch), mx.nd.array(np.reshape(R_batch,(-1, 1))),
         # mx.nd.array(a_batch)
+        module.clear_gradients()
+        module.forward(batch, is_train=True)
+        module.backward()
+
         with lock:
             Module.add_gradients_from_module(module)
             #Module.clip_gradients(10)
             #Module.update()
             #Module.clear_gradients()
-
-        module.clear_gradients()
 
         if terminal:
             print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ P_MAX %.4f" % episode_max_p, "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
