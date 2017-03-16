@@ -12,10 +12,15 @@ import random
 from a3cmodule import A3CModule
 from datetime import datetime
 from collections import deque
+from tensorboard import summary
+from tensorboard import FileWriter
 
 T = 0
 TMAX = 80000000
 t_max = 32
+
+logdir = './logs/'
+summary_writer = FileWriter(logdir)
 
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true',
@@ -286,6 +291,9 @@ def actor_learner_thread(thread_id):
 
             if terminal:
                 print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q / float(ep_t)), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+                s = summary.scalar('score', ep_reward)
+                summary_writer.add_summary(s, T)
+                summary_writer.flush()
                 elapsed_time = time.time() - start_time
                 steps_per_sec = T / elapsed_time
                 print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
