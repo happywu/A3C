@@ -10,10 +10,15 @@ import gym
 from datetime import datetime
 import time
 from a3cmodule import A3CModule
+from tensorboard import summary
+from tensorboard import FileWriter
 
 T = 0
 TMAX = 80000000
 t_max = 32
+
+logdir = './a3c_logs/'
+summary_writer = FileWriter(logdir)
 
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true',
@@ -47,14 +52,14 @@ parser.add_argument('--gamma', type=float, default=0.99)
 parser.add_argument('--beta', type=float, default=0.08)
 
 parser.add_argument('--game', type=str, default='Breakout-v0')
-parser.add_argument('--num-threads', type=int, default=3)
+parser.add_argument('--num-threads', type=int, default=4)
 parser.add_argument('--epsilon', type=float, default=1)
 parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
-parser.add_argument('--save-every', type=int, default=1000)
+parser.add_argument('--save-every', type=int, default=500)
 parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
-parser.add_argument('--game-source', type=str, default='f')
+parser.add_argument('--game-source', type=str, default='Gym')
 
 args = parser.parse_args()
 
@@ -84,8 +89,8 @@ def getNet(act_dim):
     devs = mx.cpu() if args.gpus is None else [
         mx.gpu(int(i)) for i in args.gpus.split(',')]
     '''
-    #devs = mx.gpu(0)
-    devs = mx.cpu()
+    devs = mx.gpu(1)
+    #devs = mx.cpu()
     loss_net = sym.get_symbol_atari(act_dim)
     loss_mod = A3CModule(loss_net, data_names=('data', 'rewardInput', 'actionInput', 'tdInput'),
                          label_names=None, context=devs)
@@ -157,8 +162,8 @@ def actor_learner_thread(thread_id):
     terminal = False
     # anneal e-greedy probability
     final_epsilon = sample_final_epsilon()
-    initial_epsilon = 0.1
-    epsilon = 0.1
+    initial_epsilon = 0.5
+    epsilon = 0.5
     t = 0
     replayMemory =  []
     episode_max_p = 0
@@ -208,7 +213,6 @@ def actor_learner_thread(thread_id):
             r_t = np.clip(r_t, -1, 1)
             t += 1
             T += 1
-            ep_t += 1
             ep_reward += r_t
 
             s_batch.append(s_t)
@@ -265,6 +269,9 @@ def actor_learner_thread(thread_id):
             steps_per_sec = T / elapsed_time
             print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
                 T,  elapsed_time, steps_per_sec, steps_per_sec * 3600 / 1000000.))
+            s = summary.scalar('score', ep_reward)
+            summary_writer.add_summary(s, T)
+            summary_writer.flush()
             ep_reward = 0
             episode_max_p = 0
             terminal = False
@@ -282,6 +289,11 @@ def test():
             args.resized_width, args.resized_height, args.agent_history_length)
     act_dim = dataiter.act_dim
     module = getNet(act_dim)
+    module.bind(data_shapes=[('data', (1, args.agent_history_length, args.resized_width, args.resized_height)),
+                             ('rewardInput', (1, 1)),
+                             ('actionInput', (1, act_dim)),
+                             ('tdInput', (1, 1))],
+                label_shapes=None, grad_req='null', force_rebind=True)
     s_t = dataiter.get_initial_state()
     ep_reward = 0
     while True:
