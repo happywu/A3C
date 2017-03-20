@@ -43,12 +43,12 @@ parser.add_argument('--num-epochs', type=int, default=120,
                     help='the number of training epochs')
 parser.add_argument('--num-examples', type=int, default=1000000,
                     help='the number of training examples')
-parser.add_argument('--batch-size', type=int, default=4)
+parser.add_argument('--batch-size', type=int, default=8)
 parser.add_argument('--input-length', type=int, default=4)
 
 parser.add_argument('--lr', type=float, default=0.0001)
 parser.add_argument('--wd', type=float, default=0)
-parser.add_argument('--t-max', type=int, default=4)
+parser.add_argument('--t-max', type=int, default=8)
 parser.add_argument('--gamma', type=float, default=0.99)
 parser.add_argument('--beta', type=float, default=0.08)
 
@@ -61,7 +61,8 @@ parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
 parser.add_argument('--game-source', type=str, default='Gym')
-parser.add_argument('--replay-memory-length', type=int, default=8)
+parser.add_argument('--replay-memory-length', type=int, default=16)
+parser.add_argument('--expore-steps', type=int, default=15000000)
 
 args = parser.parse_args()
 
@@ -93,7 +94,8 @@ def getNet(act_dim):
     '''
     devs = mx.gpu(1)
     #devs = mx.cpu()
-    loss_net = sym.get_symbol_atari(act_dim)
+    #loss_net = sym.get_symbol_atari(act_dim)
+    loss_net = sym.get_symbol_atari_bn(act_dim)
     loss_mod = A3CModule(loss_net, data_names=('data', 'rewardInput', 'actionInput', 'tdInput'),
                          label_names=None, context=devs)
     loss_mod.bind(data_shapes=[('data', (args.batch_size,
@@ -117,7 +119,8 @@ def getNet(act_dim):
     else:
         arg_params = aux_params = None
 
-    initializer = mx.init.Xavier(rnd_type='uniform', factor_type='in', magnitude=1)
+    initializer = mx.init.Xavier(rnd_type='uniform', factor_type='in', magnitude=0.1)
+
     #initializer = mx.init.Constant(0.0001)
     if args.load_epoch is not None:
         loss_mod.init_params(arg_params=arg_params, aux_params=aux_params)
@@ -149,11 +152,12 @@ def actor_learner_thread(thread_id):
     #kv = mx.kvstore.create(args.kv_store)
 
     devs = mx.gpu(1)
+    #devs = mx.cpu()
 
     dataiter = getGame()
     act_dim = dataiter.act_dim
     module = getNet(act_dim)
-    forward_net = sym.get_symbol_forward(act_dim)
+    forward_net = sym.get_symbol_forward_bn(act_dim)
     forward_module = A3CModule(forward_net, data_names=('data',),
                                    label_names=None, context=devs)
     forward_module.bind(data_shapes=[('data', (1, args.agent_history_length, args.resized_width, args.resized_height)), ],
@@ -195,7 +199,7 @@ def actor_learner_thread(thread_id):
             probs = policy_out.asnumpy()[0]
             v_t = value_out.asnumpy()
             episode_max_p = max(episode_max_p, max(probs))
-            #print 'prob', probs, 'pi', policy_out2.asnumpy(), 'value',  value_out.asnumpy()
+            #print 'prob', probs, 'pi', policy_out.asnumpy(), 'value',  value_out.asnumpy()
             #print mx.nd.SoftmaxActivation(policy_out2).asnumpy()
             # total_loss.asnumpy(), 'loss_out', loss_out.asnumpy()
 
@@ -208,6 +212,8 @@ def actor_learner_thread(thread_id):
             if epsilon > final_epsilon:
                 epsilon -= (initial_epsilon - final_epsilon) / \
                     args.anneal_epsilon_timesteps
+            if T > args.expore_steps:
+                epsilon = 0
 
             s_t1, r_t, terminal, info = dataiter.act(action_index)
             r_t = np.clip(r_t, -1, 1)
@@ -234,6 +240,7 @@ def actor_learner_thread(thread_id):
             R_t = forward_module.get_outputs()[1].asnumpy()
 
 
+        #print R_t
         for i in reversed(range(0, t - t_start)):
             R_t = r_batch[i] + args.gamma * R_t
             R_batch[i] = R_t
@@ -314,7 +321,7 @@ def test():
         batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(null_r),
                                         mx.nd.array(null_a), mx.nd.array(null_td)], label=None)
         module.forward(batch, is_train=False)
-        policy_out, value_out, total_loss, loss_out , policy_out2= module.get_outputs()
+        policy_out, value_out, total_loss = module.get_outputs()
         probs = policy_out.asnumpy()[0]
         action_index = np.argmax(probs)
         a_t = np.zeros([act_dim])
