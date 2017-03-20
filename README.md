@@ -16,26 +16,18 @@ This is a MXNET implementation of A3C as described in ["Asynchronous Methods for
 
 Game source from [Using Deep Q-Network to Learn How To Play Flappy Bird](https://github.com/yenchenlin/DeepLearningFlappyBird). 
 
-Running FlappyBird needs [PyGame-Learning-Environment(PLE)](https://github.com/ntasfi/PyGame-Learning-Environment). 
 
 If you don't want to run FlappyBird, you can ignore this.
 
 To run experiment:
 ```bash
-python async_dqn.py --game-source='flappybird'
+python a3c.py --game-source=flappybird --num-threads=16 --save-model-prefix=a3c-flappybird --save-every=1000
 ```
 
-### Installation
-
-PLE requires the following dependencies:
-* numpy
-* pygame
-* pillow
-
-Clone the repo and install with pip.
-
+To eval, I have upload a checkpoint of mine, you could try your own parameters. 
 ```bash
-git clone https://github.com/ntasfi/PyGame-Learning-Environment.git
-cd PyGame-Learning-Environment/
-pip install -e .
-``` 
+python a3c.py --test --model-prefix=a3ce-8 --load-epoch=305000 --game-source=flappybird
+```
+
+### Notice
+If you train on computer without GPUS, please change "devs = gpu(1)" to "devs = cpu()"
