@@ -29,6 +29,8 @@ class RLDataIter(object):
     def get_initial_state(self):
         raise NotImplementedError()
 
+    '''
+    This preprocessing method shows low performance.
     def get_preprocessed_frame(self, observation):
         """
         See Methods->Preprocessing in Mnih et al.
@@ -36,6 +38,26 @@ class RLDataIter(object):
         2) Rescale image
         """
         return resize(rgb2gray(observation), (self.resized_width, self.resized_height))
+    '''
+
+    '''
+    TODO: This preprocessing method works well for atari environment, however needs to change to general one with variable 
+    height and width.
+    '''
+    def get_preprocessed_frame(self, img):
+        img = img[35:195]
+        img = img[::2, ::2, 0]
+        img[img == 144] = 0
+        img[img == 109] = 0
+        img[img != 0] = 1
+        #curr = np.expand_dims(img.astype(np.float).ravel(), axis=0)
+        curr = np.expand_dims(img.astype(np.float), axis=0)
+        # Subtract the last preprocessed image.
+        #diff = (curr - self.prev if self.prev is not None
+        #        else np.zeros((1, curr.shape[1])))
+        #self.prev = curr
+        return curr.reshape((80, 80))
+
 
     def act(self, action_index):
         raise NotImplementedError()
@@ -54,12 +76,12 @@ class GymDataIter(RLDataIter):
         self.env.seed(sed)
 
     def get_initial_state(self):
-
         # reset game, clear state buffer
         self.state_buffer = deque()
 
         x_t = self.env.reset()
         x_t = self.get_preprocessed_frame(x_t)
+        # store (history information) last four frames.
         s_t = np.stack((x_t, x_t, x_t, x_t), axis=0)
 
         # initial state, agent_history_length-1 empty state
