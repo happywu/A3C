@@ -18,6 +18,7 @@ class RLDataIter(object):
         self.resized_height = resized_height
         self.agent_history_length = agent_history_length
         self.env = self.make_env(visual)
+        self.last_raw_frame = None
         self.state_buffer = deque()
         self.state_ = np.zeros((self.agent_history_length, self.resized_width, self.resized_height))
         self.provide_data = mx.io.DataDesc('data', self.state_.shape,
@@ -57,7 +58,31 @@ class RLDataIter(object):
         #        else np.zeros((1, curr.shape[1])))
         #self.prev = curr
         return curr.reshape((80, 80))
-
+    '''
+    Follow the original Lua implementation
+    '''
+    def get_preprocessed_frame(self, img, crop=False):
+        # Max of two consecutive frames
+        img = np.maximum(img, self.last_raw_frame)
+        self.last_raw_frame = img
+        # RGB -> Luminance
+        img = img[:, :, 0] * 0.299 + img[:, :, 1] * \
+            0.587 + img[:, :, 2] * 0.114
+        img = img.astype(np.uint8)
+        if crop:
+             # Shrink (210, 160) -> (110, 84)
+            img = cv2.resize(img, (84, 110),
+                             interpolation=cv2.INTER_LINEAR)
+            assert img.shape == (110, 84)
+            # Crop (110, 84) -> (84, 84)
+            unused_height = 110 - 84
+            bottom_crop = 8
+            top_crop = unused_height - bottom_crop
+            img = img[top_crop: 110 - bottom_crop, :]
+        else:
+            img = cv2.resize(img, (84, 84),
+                             interpolation=cv2.INTER_LINEAR)
+    '''
 
     def act(self, action_index):
         raise NotImplementedError()
@@ -80,6 +105,7 @@ class GymDataIter(RLDataIter):
         self.state_buffer = deque()
 
         x_t = self.env.reset()
+        self.last_raw_frame = x_t
         x_t = self.get_preprocessed_frame(x_t)
         # store (history information) last four frames.
         s_t = np.stack((x_t, x_t, x_t, x_t), axis=0)
