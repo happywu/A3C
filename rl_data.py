@@ -61,6 +61,7 @@ class RLDataIter(object):
     '''
     Follow the original Lua implementation
     '''
+    '''
     def get_preprocessed_frame(self, img, crop=False):
         # Max of two consecutive frames
         img = np.maximum(img, self.last_raw_frame)

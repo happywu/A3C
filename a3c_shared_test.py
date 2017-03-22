@@ -14,6 +14,8 @@ from datetime import datetime
 from itertools import chain
 import time
 from a3cmodule import A3CModule
+from myinit import normalized_columns_initializer
+from myinit import my_conv_initializer
 
 T = 0
 TMAX = 80000000
@@ -113,6 +115,10 @@ def getNet(act_dim):
         arg_params = aux_params = None
 
     initializer = mx.init.Xavier(rnd_type='uniform', factor_type='in', magnitude=0.1)
+
+    initializer = mx.init.Mixed(['fc_value', 'fc_policy', '.*'],
+                         [normalized_columns_initializer(1), normalized_columns_initializer(0.01), my_conv_initializer()])
+
     if args.load_epoch is not None:
         loss_mod.init_params(arg_params=arg_params, aux_params=aux_params)
     else:
