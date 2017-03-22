@@ -115,7 +115,6 @@ def getNet(act_dim):
         arg_params = aux_params = None
 
     initializer = mx.init.Xavier(rnd_type='uniform', factor_type='in', magnitude=0.1)
-
     initializer = mx.init.Mixed(['fc_value', 'fc_policy', '.*'],
                          [normalized_columns_initializer(1), normalized_columns_initializer(0.01), my_conv_initializer()])
 
