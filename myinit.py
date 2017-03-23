@@ -1,7 +1,6 @@
-import mxnet as mx
-from mx.init import register
-from mx.init import Initializer
-from mx import random
+from mxnet.initializer import register
+from mxnet.initializer import Initializer
+from mxnet import random
 import numpy as np
 
 @register
@@ -10,14 +9,13 @@ class normalized_columns_initializer(Initializer):
         super(normalized_columns_initializer, self).__init__()
         self.std = std
 
-
     def _init_weight(self, _, arr):
         shape = arr.shape
         hw_scale = 1.
         if len(shape) > 2:
             hw_scale = np.prod(shape[2:])
         fan_in, fan_out = shape[1] * hw_scale, shape[0] * hw_scale
-        out = np.random.randn((fan_in, fan_out)).astype(np.float32)
+        out = np.random.randn(int(fan_out), int(fan_in)).astype(np.float32)
         out *= self.std / np.sqrt(np.square(out).sum(axis=0, keepdims=True))
         arr[:] = out
 

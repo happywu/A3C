@@ -4,7 +4,7 @@ import mxnet as mx
 import numpy as np
 from mxnet.module import Module
 from mxnet import context as ctx
-COUNT_MAX = 8
+COUNT_MAX = 4
 USE_AVERAGE = True
 
 class A3CModule(Module):
@@ -16,7 +16,7 @@ class A3CModule(Module):
         self.count_max = COUNT_MAX
         super(A3CModule, self).__init__(symbol=symbol, data_names=data_names,
                                         label_names=label_names, logger=logger, context=context,
-                                        work_load_list=work_load_list, fixed_param_names=fixed_param_names, state_names=state_names)
+                                        work_load_list=work_load_list, fixed_param_names=fixed_param_names)
 
     def clear_gradients(self):
         """clear gradient

@@ -7,9 +7,6 @@ from skimage.color import rgb2gray
 from collections import deque
 from ple.games.flappybird import FlappyBird
 from ple import PLE
-import sys
-sys.path.append('game/')
-import wrapped_flappy_bird as game
 
 class RLDataIter(object):
     def __init__(self, resized_width, resized_height, agent_history_length, visual=False):
@@ -148,6 +145,9 @@ class GymDataIter(RLDataIter):
 
 class FlappyBirdIter(RLDataIter):
     def __init__(self, resized_width, resized_height, agent_history_length, visual=False):
+        import sys
+        sys.path.append('game/')
+        import wrapped_flappy_bird as game
         self.act_dim = 2
         super(FlappyBirdIter, self).__init__(resized_width, resized_height, agent_history_length, visual)
 
