@@ -35,8 +35,11 @@ def get_symbol_atari(act_dim, entropy_beta=0.01):
 
     return mx.symbol.Group([policy_out, value_out, total_loss])
 
-def get_symbol_atari_bn(act_dim, entropy_beta=0.01):
+def get_symbol_atari_bn(act_dim, entropy_beta=0.01)
     data = mx.symbol.Variable('data')
+    rewardInput = mx.symbol.Variable('rewardInput')
+    actionInput = mx.symbol.Variable('actionInput')
+    tdInput = mx.symbol.Variable('tdInput')
     net = mx.symbol.Cast(data=data, dtype='float32')
     net = mx.symbol.Convolution(data=net, name='conv1', kernel=(8, 8), stride=(4, 4), num_filter=16)
     net = mx.symbol.BatchNorm(data=net, name='bn1')
@@ -57,9 +60,6 @@ def get_symbol_atari_bn(act_dim, entropy_beta=0.01):
     value = mx.symbol.FullyConnected(data=net, name='fc_value', num_hidden=1)
     value_out = mx.symbol.BlockGrad(data=value, name='value_out')
     # loss
-    rewardInput = mx.symbol.Variable('rewardInput')
-    actionInput = mx.symbol.Variable('actionInput')
-    tdInput = mx.symbol.Variable('tdInput')
     # avoid NaN with clipping when pi becomes zero
 
     policy_log = mx.symbol.log(data=policy, name='policy_log')
@@ -152,7 +152,13 @@ def get_symbol_forward_bn(act_dim):
 
     return mx.symbol.Group([policy_out, value_out])
 
-def get_dqn_symbol(act_dim, ispredict=False):
+def clipped_error(x):
+    if mx.sym.abs(x)<1.0:
+        return 0.5 * mx.sym.square(x)
+    else:
+        return mx.sym.abs(x) - 0.5
+    
+def get_dqn_symbol(act_dim, ispredict=False, clip_loss=False):
     data = mx.symbol.Variable('data')
     net = mx.symbol.Cast(data=data, dtype='float32')
     net = mx.symbol.Convolution(data=net, name='conv1', kernel=(8, 8), stride=(4, 4), num_filter=16)
@@ -169,8 +175,11 @@ def get_dqn_symbol(act_dim, ispredict=False):
     rewardInput = mx.symbol.Variable('rewardInput')
     actionInput = mx.symbol.Variable('actionInput')
     temp1 = mx.symbol.sum(Qvalue * actionInput, axis=1, keepdims=True, name='temp1')
-    loss = mx.symbol.MakeLoss(mx.symbol.square(rewardInput -
-                                               temp1))
+    if clip_loss:
+        loss = mx.sym.MakeLoss(clipped_error(rewardInput - temp1))
+    else:
+        loss = mx.symbol.MakeLoss(mx.symbol.square(rewardInput -
+                                                   temp1))
     if (ispredict):
         # Target q network, only predict
         return Qvalue

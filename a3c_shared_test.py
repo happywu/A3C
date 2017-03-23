@@ -21,9 +21,6 @@ T = 0
 TMAX = 80000000
 t_max = 32
 
-logdir = './logs/'
-summary_writer = FileWriter(logdir)
-
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true',
                     help='run testing', default=False)
@@ -67,6 +64,9 @@ parser.add_argument('--game-source', type=str, default='Gym')
 parser.add_argument('--replay-memory-length', type=int, default=32)
 args = parser.parse_args()
 
+
+logdir = args.log_dir
+summary_writer = FileWriter(logdir)
 
 def save_params(save_pre, model, epoch):
     model.save_checkpoint(save_pre, epoch, save_optimizer_states=True)
@@ -116,7 +116,7 @@ def getNet(act_dim):
 
     initializer = mx.init.Xavier(rnd_type='uniform', factor_type='in', magnitude=0.1)
     initializer = mx.init.Mixed(['fc_value', 'fc_policy', '.*'],
-                         [normalized_columns_initializer(1), normalized_columns_initializer(0.01), my_conv_initializer()])
+                         [normalized_columns_initializer(1.0), normalized_columns_initializer(0.01), my_conv_initializer()])
 
     if args.load_epoch is not None:
         loss_mod.init_params(arg_params=arg_params, aux_params=aux_params)
@@ -266,8 +266,14 @@ def actor_learner_thread(thread_id):
         with lock:
             Module.clear_gradients()
             Module.forward(batch, is_train=True)
-            #print mx.nd.array(neg_adv), v_grad
-            #print 'loss', np.mean(Module.get_outputs()[2].asnumpy())
+            _, _, total_loss, policy_loss, value_loss = Module.get_outputs()
+            s = summary.scalar('total_loss', np.mean(total_loss.asnumpy()))
+            summary_writer.add_summary(s, T)
+            s = summary.scalar('policy_loss', np.mean(policy_loss.asnumpy()))
+            summary_writer.add_summary(s, T)
+            s = summary.scalar('value_loss', np.mean(value_loss.asnumpy()))
+            summary_writer.add_summary(s, T)
+            summary_writer.flush()
             Module.backward(out_grads=[mx.nd.array(neg_adv), v_grad])
             Module.update()
 

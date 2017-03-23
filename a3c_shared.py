@@ -18,9 +18,6 @@ T = 0
 TMAX = 80000000
 t_max = 32
 
-logdir = './logs/'
-summary_writer = FileWriter(logdir)
-
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true',
                     help='run testing', default=False)
@@ -65,6 +62,9 @@ parser.add_argument('--replay-memory-length', type=int, default=32)
 args = parser.parse_args()
 
 
+logdir = args.log_dir
+summary_writer = FileWriter(logdir)
+
 def save_params(save_pre, model, epoch):
     model.save_checkpoint(save_pre, epoch, save_optimizer_states=True)
 
@@ -90,8 +90,8 @@ def getNet(act_dim):
     devs = mx.cpu() if args.gpus is None else [
         mx.gpu(int(i)) for i in args.gpus.split(',')]
     '''
-    #devs = mx.gpu(0)
-    devs = mx.cpu()
+    devs = mx.gpu(0)
+    #devs = mx.cpu()
     loss_net = sym.get_symbol_atari(act_dim)
     loss_mod = A3CModule(loss_net, data_names=('data', 'rewardInput', 'actionInput', 'tdInput'),
                          label_names=None, context=devs)
@@ -171,6 +171,7 @@ def actor_learner_thread(thread_id):
     t = 0
     replayMemory = []
     episode_max_p = 0
+    max_v = -1000
     while T < TMAX:
         tic = time.time()
         with lock:
@@ -194,11 +195,12 @@ def actor_learner_thread(thread_id):
                                           mx.nd.array(null_a), mx.nd.array(null_td)], label=None)
 
             module.forward(batch, is_train=False)
-            policy_out, value_out, total_loss, loss_out , policy_out2= module.get_outputs()
+            policy_out, value_out, total_loss = module.get_outputs()
             probs = policy_out.asnumpy()[0]
             v_t = value_out.asnumpy()
             episode_max_p = max(episode_max_p, max(probs))
-            #print 'prob', probs, 'pi', policy_out2.asnumpy(), 'value',  value_out.asnumpy()
+            max_v = max(max_v, value_out.asnumpy())
+            #print 'prob', probs, 'value',  value_out.asnumpy()
             #print mx.nd.SoftmaxActivation(policy_out2).asnumpy()
             # total_loss.asnumpy(), 'loss_out', loss_out.asnumpy()
 
@@ -274,14 +276,24 @@ def actor_learner_thread(thread_id):
             Module.clear_gradients()
             Module.forward(batch, is_train=True)
             #print 'loss', np.mean(Module.get_outputs()[2].asnumpy())
+            _, _, total_loss, policy_loss, value_loss = Module.get_outputs()
+            s = summary.scalar('total_loss', np.mean(total_loss.asnumpy()))
+            summary_writer.add_summary(s, T)
+            s = summary.scalar('policy_loss', np.mean(policy_loss.asnumpy()))
+            summary_writer.add_summary(s, T)
+            s = summary.scalar('value_loss', np.mean(value_loss.asnumpy()))
+            summary_writer.add_summary(s, T)
+            summary_writer.flush()
+
             Module.backward()
             Module.update()
 
         if terminal:
-            print "THREAD:", thread_id, "/ Epoch", epoch, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ P_MAX %.4f" % episode_max_p, "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+            print "THREAD:", thread_id, "/ Epoch", epoch, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ P_MAX %.4f" % episode_max_p, "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps), "Max_v", max_v
             s = summary.scalar('score', ep_reward)
             summary_writer.add_summary(s, T)
             summary_writer.flush()
+            max_v = -1000
             elapsed_time = time.time() - start_time
             steps_per_sec = T / elapsed_time
             print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(

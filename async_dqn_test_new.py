@@ -12,15 +12,12 @@ import random
 from a3cmodule import A3CModule
 from datetime import datetime
 from collections import deque
-from tensorboard import summary
-from tensorboard import FileWriter
+#from tensorboard import summary
+#from tensorboard import FileWriter
 
 T = 0
 TMAX = 80000000
 t_max = 32
-
-logdir = './logs/'
-summary_writer = FileWriter(logdir)
 
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true',
@@ -59,7 +56,7 @@ parser.add_argument('--epsilon', type=float, default=1)
 parser.add_argument('--anneal-epsilon-timesteps', type=int, default=100000)
 parser.add_argument('--save-every', type=int, default=1000)
 parser.add_argument('--network-update-frequency', type=int, default=16)
-parser.add_argument('--target-network-update-frequency', type=int, default=32)
+parser.add_argument('--target-network-update-frequency', type=int, default=40000)
 parser.add_argument('--resized-width', type=int, default=84)
 parser.add_argument('--resized-height', type=int, default=84)
 parser.add_argument('--agent-history-length', type=int, default=4)
@@ -67,6 +64,10 @@ parser.add_argument('--game-source', type=str, default='Gym')
 parser.add_argument('--replay-memory-length', type=int, default=32)
 
 args = parser.parse_args()
+
+
+logdir = args.log_dir
+summary_writer = FileWriter(logdir)
 
 
 def save_params(save_pre, model, epoch):
@@ -169,7 +170,7 @@ def actor_learner_thread(thread_id):
                                            args.resized_width, args.resized_height)),
                                  ('rewardInput', (1, 1)),
                                  ('actionInput', (1, act_dim))],
-                    label_shapes=None, grad_req='add', force_rebind=True)
+                    label_shapes=None, grad_req='null', force_rebind=True)
     # Set up per-episode counters
     ep_reward = 0
     episode_max_q = 0
@@ -195,9 +196,14 @@ def actor_learner_thread(thread_id):
             r_batch = []
             R_batch = []
             terminal_batch = []
+            thread_net.bind(data_shapes=[('data', (1, args.agent_history_length,
+                                                args.resized_width, args.resized_height)),
+                                        ('rewardInput', (1, 1)),
+                                        ('actionInput', (1, act_dim))],
+                            label_shapes=None, grad_req='null', force_rebind=True)
             with lock:
                 thread_net.copy_from_module(Module)
-            thread_net.clear_gradients()
+            #thread_net.clear_gradients()
             while not (terminal or ((t - t_start) == args.t_max)):
                 batch = mx.io.DataBatch(data=[mx.nd.array([s_t]), mx.nd.array(np.zeros((1, 1))),
                                             mx.nd.array(np.zeros((1, act_dim)))],
@@ -223,7 +229,6 @@ def actor_learner_thread(thread_id):
                 t += 1
                 with lock:
                     T += 1
-                ep_t += 1
                 ep_reward += r_t
                 episode_max_q = max(episode_max_q, np.max(q_out))
                 s_batch.append(s_t)
@@ -262,24 +267,36 @@ def actor_learner_thread(thread_id):
             action_batch = ([data[1] for data in minibatch])
             R_batch = ([data[4] for data in minibatch])
 
-            thread_net.clear_gradients()
             # TODO here can only forward one at each time because mxnet need rebind
             # for variable input length
-            for i in range(args.batch_size):
-                batch = mx.io.DataBatch(data=[mx.nd.array([state_batch[i]]),
-                                            mx.nd.array(np.reshape(
-                                                R_batch[i], (-1, 1))),
-                                            mx.nd.array([action_batch[i]])], label=None)
+            batch_size = len(minibatch)
+            thread_net.bind(data_shapes=[('data', (batch_size, args.agent_history_length,
+                                                args.resized_width, args.resized_height)),
+                                        ('rewardInput', (batch_size, 1)),
+                                        ('actionInput', (batch_size, act_dim))],
+                            label_shapes=None, grad_req='write', force_rebind=True)
 
-                thread_net.forward(batch, is_train=True)
-                thread_net.backward()
+            batch = mx.io.DataBatch(data=[mx.nd.array(state_batch),
+                                          mx.nd.array(np.reshape(
+                                              R_batch, (-1, 1))),
+                                          mx.nd.array(action_batch)], label=None)
+
+            thread_net.clear_gradients()
+            thread_net.forward(batch, is_train=True)
+            loss = np.mean(thread_net.get_outputs()[0].asnumpy())
+            thread_net.backward()
+
+            s = summary.scalar('loss', loss)
+            summary_writer.add_summary(s, T)
+            summary_writer.flush()
 
             with lock:
+                Module.clear_gradients()
                 Module.add_gradients_from_module(thread_net)
                 Module.update()
                 Module.clear_gradients()
 
-            thread_net.update()
+            #thread_net.update()
             thread_net.clear_gradients()
 
             if t % args.network_update_frequency == 0 or terminal:

@@ -9,17 +9,14 @@ import threading
 import gym
 import time
 import random
-from tensorboard import summary
-from tensorboard import FileWriter
+#from tensorboard import summary
+#from tensorboard import FileWriter
 from datetime import datetime
 from collections import deque
 
 T = 0
 TMAX = 80000000
 t_max = 32
-
-logdir = './logs/'
-summary_writer = FileWriter(logdir)
 
 parser = argparse.ArgumentParser(description='Traing A3C with OpenAI Gym')
 parser.add_argument('--test', action='store_true',
@@ -67,6 +64,9 @@ parser.add_argument('--replay-memory-length', type=int, default=32)
 
 args = parser.parse_args()
 
+
+logdir = args.log_dir
+summary_writer = FileWriter(logdir)
 
 def save_params(save_pre, model, epoch):
     model.save_checkpoint(save_pre, epoch, save_optimizer_states=True)
@@ -233,6 +233,7 @@ def actor_learner_thread(thread_id):
         ep_loss = 0
         # perform an episode
         terminal = False
+        episode_max_q = 0
         while True:
             # perform n steps
             t_start = t
@@ -271,7 +272,7 @@ def actor_learner_thread(thread_id):
                 T += 1
                 ep_t += 1
                 ep_reward += r_t
-                episode_ave_max_q += np.max(q_out)
+                episode_max_q = max(episode_max_q, np.max(q_out))
 
                 s_batch.append(s_t)
                 s1_batch.append(s_t1)
@@ -319,6 +320,9 @@ def actor_learner_thread(thread_id):
 
             with lock:
                 Module.forward(batch, is_train=True)
+                loss = np.mean(Module.get_outputs()[0].asnumpy())
+                summary_writer.add_summary(s, T)
+                summary_writer.flush()
                 Module.backward()
                 Module.update()
 
@@ -327,9 +331,8 @@ def actor_learner_thread(thread_id):
                     copyTargetQNetwork(Module, Target_module)
 
             if terminal:
-                print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q / float(ep_t)), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
+                print "THREAD:", thread_id, "/ TIME", T, "/ TIMESTEP", t, "/ EPSILON", epsilon, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_max_q), "/ EPSILON PROGRESS", t / float(args.anneal_epsilon_timesteps)
                 s = summary.scalar('score', ep_reward)
-                #summary_writer.add_summary('score', ep_reward)
                 summary_writer.add_summary(s, T)
                 summary_writer.flush()
                 elapsed_time = time.time() - start_time
@@ -337,7 +340,7 @@ def actor_learner_thread(thread_id):
                 print("### Performance : {} STEPS in {:.0f} sec. {:.0f} STEPS/sec. {:.2f}M STEPS/hour".format(
                     T,  elapsed_time, steps_per_sec, steps_per_sec * 3600 / 1000000.))
                 ep_reward = 0
-                episode_ave_max_q = 0
+                episode_max_q = 0
                 break
 
         #print epoch

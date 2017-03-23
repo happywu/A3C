@@ -5,7 +5,7 @@ import numpy as np
 from mxnet.module import Module
 from mxnet import context as ctx
 COUNT_MAX = 4
-USE_AVERAGE = True
+USE_AVERAGE = False
 
 class A3CModule(Module):
     def __init__(self, symbol, data_names=('data',), label_names=('softmax_label',),
