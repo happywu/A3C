@@ -5,8 +5,6 @@ import cv2
 from skimage.transform import resize
 from skimage.color import rgb2gray
 from collections import deque
-from ple.games.flappybird import FlappyBird
-from ple import PLE
 
 class RLDataIter(object):
     def __init__(self, resized_width, resized_height, agent_history_length, visual=False):
@@ -38,11 +36,24 @@ class RLDataIter(object):
         return resize(rgb2gray(observation), (self.resized_width, self.resized_height))
     '''
 
+    def get_preprocessed_frame(self, frame):
+        frame = frame[34:34+160, :160]
+        # Resize by half, then down to 42x42 (essentially mipmapping). If
+        # we resize directly we lose pixels that, when mapped to 42x42,
+        # aren't close enough to the pixel boundary.
+        frame = cv2.resize(frame, (80, 80))
+        frame = cv2.resize(frame, (42, 42))
+        frame = frame.mean(2)
+        frame = frame.astype(np.float32)
+        frame *= (1.0 / 255.0)
+        frame = np.reshape(frame, [42, 42])
+        return frame
+
     '''
     TODO: This preprocessing method works well for atari environment, however needs to change to general one with variable 
     height and width.
     '''
-    def get_preprocessed_frame(self, img):
+    def _get_preprocessed_frame(self, img):
         img = img[35:195]
         img = img[::2, ::2, 0]
         img[img == 144] = 0

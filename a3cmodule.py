@@ -4,6 +4,11 @@ import mxnet as mx
 import numpy as np
 from mxnet.module import Module
 from mxnet import context as ctx
+from mxnet.module import Module
+from mxnet import context as ctx
+from mxnet.initializer import Uniform, InitDesc
+from mxnet import ndarray as nd
+
 COUNT_MAX = 4
 USE_AVERAGE = False
 
@@ -58,6 +63,12 @@ class A3CModule(Module):
         self.init_params(initializer=None, arg_params=arg_params,
                          aux_params=aux_params, force_init=True)
 
+    def copy_param_from_module(self, from_module):
+        arg_params, _ = from_module.get_params()
+        _, aux_params = self.get_params()
+        self.init_params(initializer=None, arg_params=arg_params,
+                         aux_params=aux_params, force_init=True)
+
     def clip_gradients(self, threshold):
         """clip gradients
         """
@@ -65,3 +76,48 @@ class A3CModule(Module):
             for grad in grads:
                 grad -= grad - \
                     mx.nd.clip(grad, -1.0 * threshold, 1.0 * threshold).copy()
+
+
+    def norm_clipping(self, threshold=1.0):
+        """Clip the norm according to the threshold.
+        All the gradients are concatenated to a single vector and the overall norm is calculated.
+        Follows `[ICML2013] On the difficulty of training recurrent neural networks`
+
+        Parameters
+        ----------
+        threshold : float, optional
+
+        Returns
+        -------
+        norm_val : float
+            The norm value. It could be used to measure whether the gradients are stable.
+        """
+        assert self.binded and self.params_initialized
+        norm_val = self.get_global_norm_val()
+        if norm_val > threshold:
+            ratio = threshold / float(norm_val)
+            for grads in self._exec_group.grad_arrays:
+                for grad in grads:
+                    grad[:] *= ratio
+        return norm_val
+
+    def get_global_norm_val(self):
+        """Get the overall gradient norm ||W||_2
+
+        Parameters
+        ----------
+        net : mx.mod.Module
+
+        Returns
+        -------
+        norm_val : float
+        """
+        assert self.binded and self.params_initialized
+        #TODO The code in the following will cause the estimated norm to be different for multiple gpus
+        norm_val = 0.0
+        for i in range(len(self._exec_group.grad_arrays[0])):
+            norm_val += np.sqrt(
+                sum([nd.norm(grads[i]).asnumpy()[0] ** 2
+                     for grads in self._exec_group.grad_arrays]))
+        norm_val /= float(len(self._exec_group.grad_arrays[0]))
+        return norm_val

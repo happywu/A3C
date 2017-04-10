@@ -35,7 +35,7 @@ def get_symbol_atari(act_dim, entropy_beta=0.01):
 
     return mx.symbol.Group([policy_out, value_out, total_loss])
 
-def get_symbol_atari_bn(act_dim, entropy_beta=0.01)
+def get_symbol_atari_bn(act_dim, entropy_beta=0.01):
     data = mx.symbol.Variable('data')
     rewardInput = mx.symbol.Variable('rewardInput')
     actionInput = mx.symbol.Variable('actionInput')
@@ -185,3 +185,45 @@ def get_dqn_symbol(act_dim, ispredict=False, clip_loss=False):
         return Qvalue
     else :
         return mx.symbol.Group([loss, Qvalue_out])
+
+
+
+def get_symbol_atari42x42(act_dim, entropy_beta=0.01):
+    data = mx.symbol.Variable('data')
+
+    net = mx.symbol.Convolution(data=data, name='conv1', kernel=(3, 3), stride=(2, 2), num_filter=32)
+    net = mx.symbol.LeakyReLU(data=net, name='elu1', act_type="elu")
+
+    net = mx.symbol.Convolution(data=net, name='conv2', kernel=(3, 3), stride=(2, 2), pad=(1,1), num_filter=32)
+    net = mx.symbol.LeakyReLU(data=net, name='elu2', act_type="elu")
+
+    net = mx.symbol.Convolution(data=net, name='conv3', kernel=(3, 3), stride=(2, 2), pad=(1,1), num_filter=32)
+    net = mx.symbol.LeakyReLU(data=net, name='elu3', act_type="elu")
+
+    net = mx.symbol.FullyConnected(data=net, name='fc4', num_hidden=64)
+    net = mx.symbol.LeakyReLU(data=net, name='elu4', act_type="elu")
+
+    ## policy network
+    fc_policy = mx.symbol.FullyConnected(data=net, name='fc_policy', num_hidden=act_dim)
+    policy = mx.symbol.SoftmaxActivation(data=fc_policy, name='policy')
+    policy_out = mx.symbol.BlockGrad(data=policy, name='policy_out')
+    ## value network
+    value = mx.symbol.FullyConnected(data=net, name='fc_value', num_hidden=1)
+    value_out = mx.symbol.BlockGrad(data=value, name='value_out')
+    # loss
+    rewardInput = mx.symbol.Variable('rewardInput')
+    actionInput = mx.symbol.Variable('actionInput')
+    tdInput = mx.symbol.Variable('tdInput')
+    # avoid NaN with clipping when pi becomes zero
+
+    policy_log = mx.symbol.log(mx.symbol.clip(data=policy, a_min=1e-10, a_max=1.0))
+    # add minus, because gradient ascend is used to optimize policy in the
+    # paper, here we use gradient descent
+    entropy =  - mx.symbol.sum(policy * policy_log, axis=1)
+
+    policy_loss = - mx.symbol.sum(mx.symbol.sum(policy_log * actionInput,
+                                                axis=1) * mx.symbol.sum(tdInput, axis=1) + entropy * entropy_beta)
+    value_loss = mx.symbol.sum(mx.symbol.square(rewardInput - value))
+    total_loss = mx.symbol.MakeLoss(policy_loss + (0.5 * value_loss))
+
+    return mx.symbol.Group([policy_out, value_out, total_loss])
